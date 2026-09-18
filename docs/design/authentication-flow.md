@@ -58,10 +58,10 @@ The concrete, current intent-by-intent assignment (which agent owns which
 intent, and its tier) lives in
 [`config/intent_tier_map.yaml`](../../config/intent_tier_map.yaml) — that
 file is the source of truth as intents get added; this table just defines
-what each tier means. As of now it only has Tier 1 intents (Accounts,
-Transaction, and Service agents — see that file for the full list and a
-couple of flagged classification calls worth a second look, e.g. cheque
-book request and KYC update).
+what each tier means. As of now it only has Tier 1 intents across the
+Accounts, Transaction, and Service agents — including cheque book request
+and KYC update, both confirmed as Tier 1 (see that file's notes for the
+reasoning behind each).
 
 > Fund transfer and any money-movement intent are assumed **not exposed on
 > IVR self-service** at all (route straight to CSR or a separate app/net-banking

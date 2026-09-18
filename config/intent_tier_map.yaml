@@ -37,26 +37,18 @@ agents:
       - id: change_of_address
         display_name: Change of Address
         tier: TIER_1
-        note: >
-          Flagged, not blocking: address changes affect where physical
-          cards/cheque books/statements get mailed. Some banks step this up
-          to TIER_2 or refuse it on IVR entirely. Confirm TIER_1 is
-          intentional.
       - id: cheque_book_request
         display_name: Cheque Book Request
         tier: TIER_1
         note: >
           authentication-flow.md SS4 originally listed cheque book request
-          as a TIER_2 example. This file downgrades it to TIER_1 per current
-          scoping -- doesn't move money, but does issue a new payment
-          instrument. Confirm this is an intentional change from the design
-          doc, and update SS4's example list to match once confirmed.
+          as a TIER_2 example. Confirmed with stakeholders: TIER_1 is
+          intentional here -- doesn't move money, but does issue a new
+          payment instrument.
       - id: kyc_update
         display_name: KYC Update
         tier: TIER_1
         note: >
-          Confirm scope before build: if this intent actually modifies KYC
-          records, RBI norms typically require in-person/video
-          verification, not phone self-service. If it only registers a
-          service request for KYC re-verification (no record change via
-          IVR), TIER_1 is reasonable as-is.
+          Confirmed with stakeholders: this intent registers a service
+          request for KYC re-verification, it does not modify KYC records
+          over IVR -- TIER_1 is appropriate on that basis.
