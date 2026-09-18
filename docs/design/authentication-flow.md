@@ -14,8 +14,10 @@ tooling are out of scope for this doc.
   CSR rather than guess or loop the caller forever.
 - Never let the IVR become a vector for account enumeration or brute-forcing
   MPIN/OTP/card/account numbers.
-- Keep sensitive digits (MPIN, OTP, card, account) out of call recordings and
-  off of paths that rely on speech recognition for the digits themselves.
+- Fully voice-native: no DTMF anywhere, including OTP — every sensitive
+  digit string is spoken and captured via ASR. Keep sensitive digits (MPIN,
+  OTP, card, account) out of persisted call recordings, transcripts, and
+  logs despite that (see §10 for how).
 
 ## 2. Actors & Integration Points
 
@@ -23,7 +25,7 @@ tooling are out of scope for this doc.
 |---|---|
 | Caller | Dials in from any phone |
 | Telephony / SIP trunk | Supplies ANI (caller's number) to the IVR platform |
-| Conversational IVR platform | ASR/NLU + TTS for the conversation; DTMF capture for sensitive digits |
+| Conversational IVR platform | ASR/NLU + TTS for the entire conversation, including sensitive digit capture — no DTMF |
 | Core Banking System (CBS) | Resolves CIF (customer) from mobile/account/card, validates MPIN/TPIN, returns account status flags (dormant, blocked, watchlist) |
 | OTP Gateway | Generates & sends OTP by SMS to a registered mobile, validates entered OTP |
 | CSR desktop / CTI | Receives escalated calls with a context handoff (see §9) |
@@ -121,10 +123,12 @@ flowchart TD
 
 1. NLU captures intent → tier determined (§4).
 2. CLI silently matches a registered mobile → CIF resolved, no prompt spent on this.
-3. **Tier 1**: prompt for MPIN/TPIN via DTMF. Correct → authenticated. Wrong
-   (up to 3 tries) → offer OTP as a fallback single factor rather than
-   re-prompting MPIN indefinitely. OTP correct → authenticated. OTP also
-   exhausted → escalate.
+3. **Tier 1**: prompt for MPIN/TPIN, spoken aloud and captured via ASR (see
+   §10 for how low-confidence capture is handled before it's even submitted
+   for validation). Correct → authenticated. Wrong (up to 3 *validated*
+   tries) → offer OTP as a fallback single factor rather than re-prompting
+   MPIN indefinitely. OTP correct → authenticated. OTP also exhausted →
+   escalate.
 4. **Tier 2**: prompt for MPIN/TPIN, then OTP — both required regardless of
    CLI match. CLI match does not reduce the Tier-2 bar; it only means the CIF
    was already known, so no separate identification step is needed.
@@ -134,12 +138,14 @@ flowchart TD
 CLI mismatch means the system doesn't yet know who's calling, so it can't
 even send an OTP anywhere yet.
 
-1. Ask for last-6 account number **and** last-4 card digits (both, together)
-   to resolve a CIF via CBS lookup. Max 2 attempts — beyond that, the system
-   is effectively being probed for a valid account and should stop guessing:
-   escalate to CSR rather than retry further.
+1. Ask for last-6 account number **and** last-4 card digits (both, together,
+   spoken and captured via ASR) to resolve a CIF via CBS lookup. Max 2
+   *validated* attempts — beyond that, the system is effectively being
+   probed for a valid account and should stop guessing: escalate to CSR
+   rather than retry further.
 2. Once CIF is resolved, send OTP to **the registered mobile on file for that
-   CIF** — never to the number the caller is actually calling from.
+   CIF** — never to the number the caller is actually calling from. Caller
+   speaks the OTP back; no DTMF fallback.
 3. **Tier 1**: OTP success alone clears the bar (it already covers both the
    possession leg and the single knowledge factor Tier 1 requires).
 4. **Tier 2**: OTP success is only the possession leg; MPIN/TPIN is still
@@ -157,6 +163,16 @@ even send an OTP anywhere yet.
 | OTP validity window | — | — | 3 minutes, single-use, invalidated by a newer OTP or a resend |
 
 Additional guardrails:
+- **Low ASR confidence doesn't count as an attempt.** Since every sensitive
+  digit string is now spoken (no DTMF), capture confidence matters: if the
+  ASR confidence on a spoken digit string is below threshold, reprompt
+  ("I didn't catch that clearly, could you say it again?") *without*
+  submitting anything to CBS/OTP gateway and without incrementing the
+  attempt count in the table above. Only a confidently-captured value that
+  CBS/the OTP gateway actually rejects counts as a used attempt. This keeps
+  the brute-force ceiling meaningful while not punishing callers for a bad
+  line or an accent the ASR struggles with. Cap soft reprompts too (e.g. 2)
+  so a persistently low-confidence line still escalates rather than looping.
 - **One escalation-triggering failure per call** — don't let a caller bounce
   between factors indefinitely hunting for a way through; once any
   exhaustion condition in the table above fires, go to CSR.
@@ -211,22 +227,51 @@ full account number — see §10.
 
 ## 10. Security & Compliance Notes
 
-- **DTMF only for sensitive digits.** MPIN/TPIN, OTP, card digits, and
-  account digits are captured via keypad tone, not speech-to-text, even
-  though the rest of the call is conversational/NLU-driven. Avoids both ASR
-  misrecognition on digit strings and the recording of spoken secrets.
-- **Mask DTMF tones in call recordings** (standard PCI-DSS practice for any
-  flow that touches card data) — pause-and-resume or tone-suppression on the
-  recorder while sensitive digits are being entered.
+No DTMF anywhere in this flow, including OTP — every sensitive digit string
+(MPIN/TPIN, OTP, card, account) is spoken and captured via ASR. That's a
+real change to the risk profile versus keypad entry: the secret now exists
+in a raw audio waveform, not just a momentary tone, so the compensating
+controls below are load-bearing, not optional hardening.
+
+- **Never persist the raw audio for a sensitive-digit turn.** Whatever the
+  DTMF pattern used to achieve with pause-and-resume/tone-suppression, do
+  the audio equivalent: either don't record the caller's audio track during
+  MPIN/OTP/card/account turns at all, or redact (mute/bleep) that segment
+  from the stored recording before it's persisted. This is the single most
+  important control in this section — everything else assumes it's in place.
+- **No full-text transcripts of sensitive turns.** The ASR pipeline
+  necessarily "hears" the full digit string to validate it, but nothing
+  downstream — transcript logs, conversation history shown to a CSR,
+  analytics — should ever persist that string in full. Store masked forms
+  only (e.g. last 2 digits) or just the pass/fail outcome, matching §9's
+  data model.
+- **Don't read the secret back to confirm it.** A natural conversational
+  instinct is "you said 4-2-1-9, is that right?" — don't do this for
+  MPIN/OTP/card/account digits, since the TTS confirmation would re-inject
+  the secret into any recorded audio and defeats the point of not recording
+  the caller's utterance. Use a masked/generic confirmation instead ("Got a
+  6-digit code, checking now") and let a wrong answer surface as a failed
+  validation rather than a spoken read-back.
+- **Caller privacy prompt.** Speaking an OTP/MPIN aloud is audible to anyone
+  nearby, unlike keying it in — a risk DTMF didn't have. Consider a brief
+  scripted nudge before the first sensitive prompt ("if you're somewhere
+  others can overhear, you may want to move somewhere private") — cheap to
+  add, meaningfully reduces shoulder-surfing/eavesdropping exposure.
 - **Never log full PAN, full account number, MPIN, or OTP** — only masked
   forms (e.g. last 4) and pass/fail outcomes in the session model and logs.
 - **DPDP Act 2023 considerations**: call recording requires disclosure/consent
-  at greeting; retention limits apply to any stored voice/DTMF data;
-  minimize what's persisted beyond the call (the session model in §9 is
-  designed to hold nothing raw-sensitive).
+  at greeting; retention limits apply to any stored audio; minimize what's
+  persisted beyond the call (the session model in §9 is designed to hold
+  nothing raw-sensitive) — now more important than before since the audio
+  itself is more sensitive without DTMF's natural masking.
 - **No enumeration**: identical, generic failure messaging whether an
   account doesn't exist vs. exists but the factor was wrong — don't let
   response differences become an oracle.
+- **Forward-looking option**: since the caller is now always speaking rather
+  than keying, this opens the door to passive voiceprint/voice-biometric
+  verification as an additional silent factor later — not in scope now, but
+  worth designing the session model (§9) with room for a `voice_match_score`
+  field if that's on the roadmap.
 
 ## 11. Open Questions for Bank Stakeholders
 
@@ -243,9 +288,14 @@ full account number — see §10.
 5. Multi-mobile customers: if 2+ mobiles are registered to one CIF, does a
    CLI match on *either* count, and which one receives the OTP in the
    mismatch path?
-6. Language/channel: DTMF-only assumed for digit capture — confirm the IVR
-   platform's ASR/DTMF mix and whether voice biometrics is a future factor
-   to design room for now.
+6. Can the IVR/telephony platform actually suppress or redact recording on a
+   per-turn basis (needed for §10's "never persist raw audio for a
+   sensitive-digit turn" control)? If it can only record a call wholesale
+   with no per-turn control, that's a platform gap to raise before this
+   design can ship as specified.
+7. ASR digit-string accuracy in practice (Indian English/Hindi/regional
+   accents, mobile network quality) — worth a bench test before committing
+   to the attempt/reprompt counts in §7.
 
 ## 12. Next Steps
 
