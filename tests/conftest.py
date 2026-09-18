@@ -5,6 +5,8 @@ from ivr.auth.flow import AuthFlow
 from ivr.auth.models import Tier
 from ivr.auth.otp_dummy import DummyOTPGateway
 from ivr.auth.tier_config import IntentTierMap
+from ivr.coordinator.flow import CoordinatorFlow
+from ivr.coordinator.intent_classifier import KeywordIntentClassifier
 
 # Synthetic catalog covering all three tiers -- config/intent_tier_map.yaml
 # only has Tier 1 intents defined so far (see docs/design/authentication-flow.md
@@ -13,6 +15,7 @@ from ivr.auth.tier_config import IntentTierMap
 # correctly.
 TEST_INTENTS = {
     "balance_enquiry": ("accounts_agent", Tier.TIER_1),
+    "statement_request": ("transaction_agent", Tier.TIER_1),
     "hotlist_card": ("cards_agent", Tier.TIER_2),
     "branch_hours": ("faq_agent", Tier.TIER_0),
 }
@@ -52,3 +55,13 @@ def otp_gateway(clock) -> DummyOTPGateway:
 @pytest.fixture
 def flow(cbs, otp_gateway, tier_map) -> AuthFlow:
     return AuthFlow(cbs=cbs, otp_gateway=otp_gateway, tier_map=tier_map)
+
+
+@pytest.fixture
+def intent_classifier(tier_map) -> KeywordIntentClassifier:
+    return KeywordIntentClassifier(tier_map)
+
+
+@pytest.fixture
+def coordinator(cbs, otp_gateway, tier_map, intent_classifier) -> CoordinatorFlow:
+    return CoordinatorFlow(cbs=cbs, otp_gateway=otp_gateway, tier_map=tier_map, intent_classifier=intent_classifier)

@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Interactive CLI harness for AuthFlow -- type responses instead of
-speaking them, "fake SMS" printed to the console instead of a real OTP
-gateway. No telephony, ASR, or TTS involved; this only exercises the
-decision logic in src/ivr/auth/flow.py, backed by the same dummy CBS/OTP
-data the test suite uses.
+"""Interactive CLI harness for CoordinatorFlow (greeting -> intent capture ->
+AuthFlow's auth gate -> handoff -> "anything else?" loop) -- type responses
+instead of speaking them, "fake SMS" printed to the console instead of a
+real OTP gateway. No telephony, ASR, TTS, or real NLU involved: intent
+capture uses the placeholder KeywordIntentClassifier, and there's no real
+domain agent to actually run a tool once handed off -- this simulates that
+completing instantly so the "anything else?" loop is exercisable.
 
 Run from the repo root:
     python scripts/call_auth_cli.py
@@ -17,12 +19,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from ivr.auth.cbs_dummy import DummyCBSClient  # noqa: E402
-from ivr.auth.flow import AuthFlow  # noqa: E402
-from ivr.auth.models import AuthStatus  # noqa: E402
 from ivr.auth.otp_dummy import DummyOTPGateway  # noqa: E402
 from ivr.auth.tier_config import IntentTierMap  # noqa: E402
+from ivr.coordinator.flow import CoordinatorFlow, CoordinatorStatus  # noqa: E402
+from ivr.coordinator.intent_classifier import KeywordIntentClassifier  # noqa: E402
 
-TERMINAL_STATUSES = {AuthStatus.AUTHENTICATED, AuthStatus.ESCALATED, AuthStatus.NO_AUTH_REQUIRED}
+TERMINAL_STATUSES = {CoordinatorStatus.READY_FOR_HANDOFF, CoordinatorStatus.ESCALATED}
 
 
 def print_customer_directory(cbs: DummyCBSClient) -> None:
@@ -44,10 +46,12 @@ def print_customer_directory(cbs: DummyCBSClient) -> None:
 
 
 def print_intent_catalog(tier_map: IntentTierMap) -> None:
-    print("\n--- Intents (from config/intent_tier_map.yaml) ---")
+    print("\n--- Intents the (placeholder) intent classifier knows about ---")
     for intent_id, agent_id, tier in sorted(tier_map.all_intents()):
         print(f"  {intent_id}  [{agent_id}, {tier.value}]")
-    print("----------------------------------------------------\n")
+    print("(You can just say things naturally -- e.g. \"what's my balance\" -- ")
+    print(" this doesn't require typing the exact intent id.)")
+    print("------------------------------------------------------------------\n")
 
 
 def prompt_input(label: str) -> tuple[str, float]:
@@ -59,28 +63,27 @@ def prompt_input(label: str) -> tuple[str, float]:
     return raw, 1.0
 
 
-def run_call(cbs: DummyCBSClient, otp_gateway: DummyOTPGateway, tier_map: IntentTierMap,
-             intent_id: str, ani: str | None) -> None:
-    flow = AuthFlow(cbs=cbs, otp_gateway=otp_gateway, tier_map=tier_map)
-    state = flow.start(ani=ani, intent_id=intent_id)
-    pending = state.status  # sticky across NEEDS_REPEAT loops -- see below
+def run_call(cbs: DummyCBSClient, otp_gateway: DummyOTPGateway, coordinator: CoordinatorFlow, ani: str | None) -> None:
+    state = coordinator.start(ani=ani)
 
-    while state.status not in TERMINAL_STATUSES:
-        if state.status != AuthStatus.NEEDS_REPEAT:
-            pending = state.status
+    while True:
         if state.prompt:
             print(f"\nAgent: {state.prompt}")
 
-        if pending == AuthStatus.NEEDS_IDENTIFICATION:
+        if state.status == CoordinatorStatus.NEEDS_INTENT:
+            text, confidence = prompt_input("You")
+            state = coordinator.submit_utterance(text, confidence=confidence)
+
+        elif state.status == CoordinatorStatus.NEEDS_IDENTIFICATION:
             account_last6, conf_a = prompt_input("Account last 6 digits")
             card_last4, conf_b = prompt_input("Card last 4 digits")
-            state = flow.submit_identification(account_last6, card_last4, confidence=min(conf_a, conf_b))
+            state = coordinator.submit_identification(account_last6, card_last4, confidence=min(conf_a, conf_b))
 
-        elif pending == AuthStatus.NEEDS_MPIN:
+        elif state.status == CoordinatorStatus.NEEDS_MPIN:
             mpin, confidence = prompt_input("MPIN")
-            state = flow.submit_mpin(mpin, confidence=confidence)
+            state = coordinator.submit_mpin(mpin, confidence=confidence)
 
-        elif pending == AuthStatus.NEEDS_OTP:
+        elif state.status == CoordinatorStatus.NEEDS_OTP:
             if state.cif:
                 mobile = cbs.get_registered_mobile(state.cif)
                 if mobile:
@@ -91,48 +94,52 @@ def run_call(cbs: DummyCBSClient, otp_gateway: DummyOTPGateway, tier_map: Intent
                         pass
             otp, confidence = prompt_input("OTP (or type 'resend')")
             if otp.lower() == "resend":
-                state = flow.request_otp_resend()
+                state = coordinator.request_otp_resend()
                 continue
-            state = flow.submit_otp(otp, confidence=confidence)
+            state = coordinator.submit_otp(otp, confidence=confidence)
+
+        elif state.status == CoordinatorStatus.READY_FOR_HANDOFF:
+            print(
+                f"\n>>> Routed to {state.agent_id} for '{state.intent_id}' "
+                f"(authenticated at {state.tier_achieved.value}). "
+                f"No real domain agent exists yet, so simulating it completing instantly. <<<"
+            )
+            again = input("Press Enter to continue the call, or type 'quit' to end it: ").strip()
+            if again.lower() == "quit":
+                print("\n=== Call ended by caller ===")
+                return
+            state = coordinator.mark_task_completed()
+
+        elif state.status == CoordinatorStatus.ESCALATED:
+            print(f"\n=== Call ended: escalated to CSR ===")
+            print(f"Internal reason: {state.escalation_reason.value}"
+                  + (f" ({state.auth_escalation_reason.value})" if state.auth_escalation_reason else ""))
+            return
 
         else:
-            raise AssertionError(f"unhandled status {pending}")  # should never happen
-
-    print(f"\n=== Call ended: {state.status.value} ===")
-    if state.status == AuthStatus.AUTHENTICATED:
-        print(f"Authenticated at {state.tier_achieved.value}. CIF={state.cif}")
-    elif state.status == AuthStatus.ESCALATED:
-        print(f"Escalated to CSR. Internal reason: {state.escalation_reason.value}")
-        print(f"(What the caller actually heard): {state.prompt}")
-    else:
-        print("No authentication was required for this intent.")
+            raise AssertionError(f"unhandled status {state.status}")
 
 
 def main() -> None:
     cbs = DummyCBSClient()
     otp_gateway = DummyOTPGateway()
     tier_map = IntentTierMap.load()
+    intent_classifier = KeywordIntentClassifier(tier_map)
 
-    print("=== IVR Authentication -- interactive CLI harness ===")
-    print("No telephony/ASR/TTS here -- this drives AuthFlow directly, turn by turn.")
+    print("=== ABC Retail Bank IVR -- interactive CLI harness ===")
+    print("No telephony/ASR/TTS/real-NLU here -- CoordinatorFlow driven directly, turn by turn.")
     print("Prefix any answer with '~' to simulate low ASR confidence, e.g. '~4321'.")
+    print("Say things like 'agent', 'repeat', or 'start over' at the intent prompt to test global commands.")
 
     print_customer_directory(cbs)
     print_intent_catalog(tier_map)
 
     while True:
-        intent_id = input("\nIntent id to call about ('list' for intents, 'quit' to exit): ").strip()
-        if intent_id == "quit":
+        ani = input("\nNew call -- calling from (mobile number, or blank for no caller ID), 'quit' to exit: ").strip()
+        if ani.lower() == "quit":
             break
-        if intent_id == "list":
-            print_intent_catalog(tier_map)
-            continue
-        if intent_id not in tier_map:
-            print("Unknown intent id -- type 'list' to see valid ones.")
-            continue
-
-        ani = input("Calling from (mobile number, or blank for no caller ID): ").strip() or None
-        run_call(cbs, otp_gateway, tier_map, intent_id, ani)
+        coordinator = CoordinatorFlow(cbs=cbs, otp_gateway=otp_gateway, tier_map=tier_map, intent_classifier=intent_classifier)
+        run_call(cbs, otp_gateway, coordinator, ani or None)
 
 
 if __name__ == "__main__":
