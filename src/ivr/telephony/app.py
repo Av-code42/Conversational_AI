@@ -213,9 +213,15 @@ async def voice_gather(request: Request) -> Response:
 @app.post("/voice/status")
 async def voice_status(request: Request) -> Response:
     """Optional Twilio call status callback -- configure separately in the
-    console if you want the session cleaned up when the caller hangs up
-    mid-flow, rather than only when this app reaches a terminal state."""
+    console (there's usually a distinct "call status changes" webhook field
+    from the main "a call comes in" one). Logs every field Twilio sends
+    (CallStatus, CallDuration, and on failure often SipResponseCode/
+    ErrorCode) -- useful diagnostic visibility that doesn't require paid
+    access to Twilio's own call log detail. Also ends the session when the
+    call reaches a terminal status, rather than only when this app itself
+    reaches one."""
     form = dict(await request.form())
+    logger.info("call %s: status callback %s", form.get("CallSid", "?"), form)
     if form.get("CallStatus") in {"completed", "failed", "busy", "no-answer", "canceled"}:
         _sessions.end(form.get("CallSid", ""))
     return Response(status_code=204)
