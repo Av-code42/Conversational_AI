@@ -125,6 +125,9 @@ class DummyCBSClient:
             return MpinCheckResult.LOCKED
         return MpinCheckResult.INCORRECT
 
-    # Test/debug helper -- not part of the CBSClient protocol.
+    # Test/debug helpers -- not part of the CBSClient protocol.
     def get_customer(self, cif: str) -> CustomerRecord:
         return self._by_cif[cif]
+
+    def list_customers(self) -> list[CustomerRecord]:
+        return list(self._by_cif.values())

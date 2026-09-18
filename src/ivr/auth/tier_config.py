@@ -47,3 +47,8 @@ class IntentTierMap:
 
     def __contains__(self, intent_id: str) -> bool:
         return intent_id in self._mapping
+
+    def all_intents(self) -> list[tuple[str, str, Tier]]:
+        """Returns [(intent_id, agent_id, tier), ...] -- for listing/UI use,
+        not part of the core lookup API (tier_for/agent_for)."""
+        return [(intent_id, agent_id, tier) for intent_id, (agent_id, tier) in self._mapping.items()]
