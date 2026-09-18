@@ -53,6 +53,10 @@ def _has_dial(xml_text: str) -> bool:
     return ET.fromstring(xml_text).find(".//Dial") is not None
 
 
+def _gather_action(xml_text: str) -> str:
+    return ET.fromstring(xml_text).find(".//Gather").get("action")
+
+
 def test_health(client):
     assert client.get("/health").json() == {"status": "ok"}
 
@@ -68,6 +72,21 @@ def test_incoming_call_without_caller_id(client):
     res = client.post("/voice/incoming", data={"CallSid": "CA1"})
     assert res.status_code == 200
     assert _has_gather(res.text)
+
+
+def test_gather_action_is_relative_when_public_base_url_unset(client, monkeypatch):
+    monkeypatch.setattr(app_module.config, "PUBLIC_BASE_URL", "")
+    res = client.post("/voice/incoming", data={"CallSid": "CA1"})
+    assert _gather_action(res.text) == "/voice/gather"
+
+
+def test_gather_action_is_absolute_when_public_base_url_set(client, monkeypatch):
+    # Relying on Twilio to resolve a relative action URL against whatever
+    # host it thinks it called has proven unreliable behind at least
+    # Codespaces' forwarded domains -- this is the fix for that.
+    monkeypatch.setattr(app_module.config, "PUBLIC_BASE_URL", "https://example.ngrok.io")
+    res = client.post("/voice/incoming", data={"CallSid": "CA1"})
+    assert _gather_action(res.text) == "https://example.ngrok.io/voice/gather"
 
 
 def test_missing_call_sid_on_incoming_is_rejected(client):

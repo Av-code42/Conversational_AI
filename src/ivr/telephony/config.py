@@ -32,8 +32,12 @@ TWILIO_AUTH_TOKEN: str = os.environ.get("TWILIO_AUTH_TOKEN", "")
 TWILIO_VALIDATE_SIGNATURES: bool = _env_bool("TWILIO_VALIDATE_SIGNATURES", False)
 
 # The exact public base URL Twilio is configured to call, e.g.
-# "https://your-codespace-8000.app.github.dev" or an ngrok URL. Required
-# only if TWILIO_VALIDATE_SIGNATURES is true.
+# "https://your-codespace-8000.app.github.dev" or an ngrok URL. Required if
+# TWILIO_VALIDATE_SIGNATURES is true. Also used (app.py's _gather_action_url)
+# to build an absolute <Gather> action URL instead of a relative one --
+# relying on Twilio to resolve a relative "/voice/gather" against whatever
+# host it thinks it called has proven unreliable behind at least Codespaces'
+# forwarded domains. Set this even with signature validation off.
 PUBLIC_BASE_URL: str = os.environ.get("PUBLIC_BASE_URL", "")
 
 # Phone number to <Dial> on escalation, e.g. "+911234567890". If unset, an

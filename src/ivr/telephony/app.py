@@ -72,10 +72,22 @@ def _xml(vr: VoiceResponse) -> Response:
     return Response(content=str(vr), media_type="application/xml")
 
 
+def _gather_action_url() -> str:
+    # Prefer an absolute URL built from PUBLIC_BASE_URL -- relying on Twilio
+    # to resolve a relative "/voice/gather" against whatever host it thinks
+    # it called has proven unreliable behind at least Codespaces' forwarded
+    # domains (manifests as Twilio's own "we cannot reach your server"
+    # message right after the first request succeeded fine). Falls back to
+    # relative only if PUBLIC_BASE_URL isn't set.
+    if config.PUBLIC_BASE_URL:
+        return config.PUBLIC_BASE_URL.rstrip("/") + "/voice/gather"
+    return "/voice/gather"
+
+
 def _gather_response(prompt: str, *, hints: str | None = None) -> Response:
     vr = VoiceResponse()
     gather = Gather(
-        input="speech", action="/voice/gather", method="POST",
+        input="speech", action=_gather_action_url(), method="POST",
         speech_timeout="auto", language="en-IN", hints=hints,
     )
     gather.say(prompt)
