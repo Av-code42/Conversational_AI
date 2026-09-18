@@ -30,10 +30,11 @@ from ivr.auth.flow import AuthFlow, AuthState
 from ivr.auth.models import AuthStatus, CBSClient, EscalationReason, OTPGateway, Tier
 from ivr.auth.tier_config import IntentTierMap
 from ivr.coordinator.intent_classifier import IntentClassifier
-from ivr.shared.global_commands import GlobalCommand, detect_global_command
+from ivr.shared.global_commands import GlobalCommand, detect_global_command, is_no_further_help_needed
 
 GREETING = "Thank you for calling ABC Retail Bank. How can I help you today?"
 ANYTHING_ELSE_PROMPT = "Is there anything else I can help you with?"
+FAREWELL_PROMPT = "Thank you for calling ABC Retail Bank. Goodbye."
 INTENT_NO_MATCH_PROMPT = "Sorry, I didn't quite catch that. Could you tell me what you'd like to do?"
 INTENT_LOW_CONFIDENCE_PROMPT = "Sorry, I didn't catch that clearly. Could you say that again?"
 GENERIC_ESCALATION_PROMPT = "Let me connect you with someone who can help you with that."
@@ -55,6 +56,7 @@ class CoordinatorStatus(str, Enum):
     NEEDS_REPEAT = "needs_repeat"
     READY_FOR_HANDOFF = "ready_for_handoff"
     ESCALATED = "escalated"
+    CALL_ENDED = "call_ended"
 
 
 class CoordinatorEscalationReason(str, Enum):
@@ -111,6 +113,10 @@ class CoordinatorFlow:
     # -- intent capture turn ----------------------------------------------
 
     def submit_utterance(self, text: str, *, confidence: float = 1.0) -> CoordinatorState:
+        if self._last_intent_prompt == ANYTHING_ELSE_PROMPT and confidence >= ASR_CONFIDENCE_THRESHOLD:
+            if is_no_further_help_needed(text):
+                return self._end_call()
+
         command = detect_global_command(text)
         if command == GlobalCommand.ESCALATE_TO_CSR:
             return self._escalate(CoordinatorEscalationReason.EXPLICIT_REQUEST)
@@ -220,6 +226,15 @@ class CoordinatorFlow:
             prompt=GENERIC_ESCALATION_PROMPT,
             escalation_reason=reason,
             auth_escalation_reason=auth_escalation_reason,
+            tier_achieved=self._tier_achieved,
+            cif=self._cif,
+        )
+
+    def _end_call(self) -> CoordinatorState:
+        self._auth = None
+        return CoordinatorState(
+            status=CoordinatorStatus.CALL_ENDED,
+            prompt=FAREWELL_PROMPT,
             tier_achieved=self._tier_achieved,
             cif=self._cif,
         )

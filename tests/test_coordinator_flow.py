@@ -156,3 +156,21 @@ def test_submit_mpin_without_active_auth_raises(coordinator):
     coordinator.start(ani=ASHA_MOBILE)
     with pytest.raises(RuntimeError):
         coordinator.submit_mpin("4321")
+
+
+def test_saying_no_after_anything_else_ends_the_call(coordinator):
+    coordinator.start(ani=ASHA_MOBILE)
+    coordinator.submit_utterance("what's my balance")
+    coordinator.submit_mpin("4321")
+    coordinator.mark_task_completed()  # prompts "anything else?"
+
+    state = coordinator.submit_utterance("no thanks")
+    assert state.status == CoordinatorStatus.CALL_ENDED
+
+
+def test_saying_no_on_the_very_first_turn_does_not_end_the_call(coordinator):
+    # "no idea what to do" legitimately contains the word "no" -- must not
+    # be treated as "caller is done" outside the "anything else?" context.
+    coordinator.start(ani=ASHA_MOBILE)
+    state = coordinator.submit_utterance("no idea what to do")
+    assert state.status == CoordinatorStatus.NEEDS_INTENT

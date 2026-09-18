@@ -51,3 +51,23 @@ def detect_global_command(text: str) -> GlobalCommand | None:
     if words & _REPEAT_WORDS or any(phrase in normalized for phrase in _REPEAT_PHRASES):
         return GlobalCommand.REPEAT
     return None
+
+
+# NOT a global command -- "no"/"bye" are only safe to treat as "caller is
+# done" in the specific context of having just asked "anything else?".
+# Checked unconditionally at any intent-capture turn, "no" would wrongly
+# end a call on something like "no idea what to do" on the very first
+# turn. CoordinatorFlow only calls this right after ANYTHING_ELSE_PROMPT.
+_NO_FURTHER_HELP_WORDS = {"no", "nope", "bye", "goodbye"}
+_NO_FURTHER_HELP_PHRASES = {
+    "no thanks", "no thank you", "that's all", "thats all", "nothing else",
+    "i'm done", "im done", "that's it", "thats it", "no i'm good", "no im good",
+}
+
+
+def is_no_further_help_needed(text: str) -> bool:
+    normalized = text.strip().lower()
+    if not normalized:
+        return False
+    words = set(normalized.split())
+    return bool(words & _NO_FURTHER_HELP_WORDS) or any(phrase in normalized for phrase in _NO_FURTHER_HELP_PHRASES)

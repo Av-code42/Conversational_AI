@@ -24,8 +24,6 @@ from ivr.auth.tier_config import IntentTierMap  # noqa: E402
 from ivr.coordinator.flow import CoordinatorFlow, CoordinatorStatus  # noqa: E402
 from ivr.coordinator.intent_classifier import KeywordIntentClassifier  # noqa: E402
 
-TERMINAL_STATUSES = {CoordinatorStatus.READY_FOR_HANDOFF, CoordinatorStatus.ESCALATED}
-
 
 def print_customer_directory(cbs: DummyCBSClient) -> None:
     print("\n--- Dummy customer directory (use these values as input) ---")
@@ -114,6 +112,10 @@ def run_call(cbs: DummyCBSClient, otp_gateway: DummyOTPGateway, coordinator: Coo
             print(f"\n=== Call ended: escalated to CSR ===")
             print(f"Internal reason: {state.escalation_reason.value}"
                   + (f" ({state.auth_escalation_reason.value})" if state.auth_escalation_reason else ""))
+            return
+
+        elif state.status == CoordinatorStatus.CALL_ENDED:
+            print("\n=== Call ended: caller said they were done ===")
             return
 
         else:
