@@ -239,6 +239,9 @@ controls below are load-bearing, not optional hardening.
   MPIN/OTP/card/account turns at all, or redact (mute/bleep) that segment
   from the stored recording before it's persisted. This is the single most
   important control in this section — everything else assumes it's in place.
+  **Confirmed with stakeholders**: the IVR/telephony platform supports
+  per-turn recording suppression/redaction, so this control is buildable as
+  specified (previously open question, now resolved).
 - **No full-text transcripts of sensitive turns.** The ASR pipeline
   necessarily "hears" the full digit string to validate it, but nothing
   downstream — transcript logs, conversation history shown to a CSR,
@@ -288,12 +291,7 @@ controls below are load-bearing, not optional hardening.
 5. Multi-mobile customers: if 2+ mobiles are registered to one CIF, does a
    CLI match on *either* count, and which one receives the OTP in the
    mismatch path?
-6. Can the IVR/telephony platform actually suppress or redact recording on a
-   per-turn basis (needed for §10's "never persist raw audio for a
-   sensitive-digit turn" control)? If it can only record a call wholesale
-   with no per-turn control, that's a platform gap to raise before this
-   design can ship as specified.
-7. ASR digit-string accuracy in practice (Indian English/Hindi/regional
+6. ASR digit-string accuracy in practice (Indian English/Hindi/regional
    accents, mobile network quality) — worth a bench test before committing
    to the attempt/reprompt counts in §7.
 
