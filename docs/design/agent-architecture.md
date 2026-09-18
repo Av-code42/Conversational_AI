@@ -65,10 +65,15 @@ stays assembled in one place — see §7.
    context: `cif`, `tier_achieved`, `intent`, any slots already captured
    during intent capture.
 5. **Global commands, always.** "Agent"/"representative"/0 → escalate;
-   "repeat"; "start over" — valid regardless of which domain agent nominally
-   has the floor. (Exactly how this is enforced — Coordinator processes every
-   turn and dispatches internally, vs. domain agents forward unrecognized
-   utterances up — depends on the orchestration framework; flagged in §8.)
+   "repeat"; "start over" — valid regardless of which domain agent has the
+   floor. **Confirmed: handoff is direct** (§8.1) — once routed, a domain
+   agent owns the conversation turns directly with the caller, the
+   Coordinator does not sit in the loop watching every utterance. That means
+   global-command detection can't be enforced centrally; it has to be a
+   shared check every domain agent runs on each turn *before* its own
+   intent-specific logic, and on a match it returns `NEED_HANDOFF` ("start
+   over") or `ESCALATE` (explicit CSR request) rather than trying to handle
+   it itself. See §4.
 6. **Regain control.** On `COMPLETED`, ask "anything else?" and loop back to
    step 1 for the next request in the same call. On `NEED_HANDOFF(new_intent)`,
    re-run steps 2–4 for the new intent (see §5 for the tier implication). On
@@ -87,9 +92,19 @@ so the Coordinator never needs agent-specific logic.
 `intent`, any slots already known) and its own tool catalog (from
 `config/intent_tier_map.yaml`'s `agents.<agent>.intents`).
 
+**Must run first, every turn**: since handoff is direct (§3.5), each domain
+agent runs a shared global-command check — the same check, imported by all
+three, not reimplemented per agent — against the caller's utterance *before*
+its own NLU/slot-filling. A match short-circuits the agent's own logic and
+returns `NEED_HANDOFF` or `ESCALATE` immediately (§9 next steps: build this
+as one shared module all domain agents depend on, not agent-specific code).
+
 **Owns**: slot-filling specific to its tools (e.g. Accounts Agent asking
 "which account — savings or current?" if the caller has more than one), the
-actual tool/API call, and formatting the spoken response.
+actual tool/API call, and formatting the spoken response. Also owns its own
+no-match/no-input reprompt-then-`ESCALATE` policy for its own turns (same
+2-reprompt pattern as authentication-flow.md §8 and §3.7 above, just scoped
+to this agent's slot-filling rather than intent capture).
 
 **Returns to Coordinator**, one of:
 - `COMPLETED` — task done, ready for "anything else?"
@@ -148,14 +163,13 @@ what authentication-flow.md §8 already specifies.
 
 ## 8. Open Questions
 
-1. **Turn-handling model**: does the Coordinator literally process every
-   utterance and dispatch internally to the current domain agent (fully
-   centralized), or does a domain agent take the floor directly with the
-   caller once handed off, only returning control on
-   `COMPLETED`/`NEED_HANDOFF`/`ESCALATE`? Depends on the orchestration
-   framework (e.g. a supervisor-graph pattern vs. direct agent handoff) —
-   worth pinning down before implementation, since it changes how "global
-   commands" (§3.5) actually get enforced.
+1. ~~Turn-handling model~~ — **Resolved: direct handoff.** A domain agent
+   takes the floor directly with the caller once routed and only returns
+   control on `COMPLETED`/`NEED_HANDOFF`/`ESCALATE`; the Coordinator does not
+   mediate every turn. Consequence: global-command detection (§3.5) and the
+   no-match/no-input reprompt policy (§4) both have to live in each domain
+   agent as a shared check, not centrally in the Coordinator — captured in
+   §9's next steps.
 2. Should the Coordinator re-verify identity (not just tier) on a topic
    switch, or is `cif` + `tier_achieved` from the same call sufficient to
    trust across agents? Assumed sufficient here (same call, same verified
@@ -169,7 +183,10 @@ what authentication-flow.md §8 already specifies.
 
 ## 9. Next Steps
 
-- Confirm §8 with the team — especially #1, which shapes implementation.
+- Confirm remaining §8 items with the team (#2–#4).
+- Build the shared global-command module (§3.5, §4) first, before any domain
+  agent — every domain agent depends on it from turn one under the direct-
+  handoff model, so it can't be an afterthought bolted on later.
 - Extend `config/intent_tier_map.yaml` once Tier 2 agents/tools exist, so
   §5's step-up logic has real cases to design against.
 - Build the Coordinator + one domain agent (Accounts — smallest surface) as
