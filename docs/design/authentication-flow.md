@@ -46,11 +46,22 @@ The IVR captures intent *before* authenticating, and authenticates at the tier
 that intent requires. This avoids over-challenging someone who just wants
 branch hours, and avoids under-challenging someone trying to block a card.
 
-| Tier | Examples | Requirement |
+Tier definitions:
+
+| Tier | Kind of ask | Requirement |
 |---|---|---|
-| **Tier 0 — Public** | Branch/ATM locator, working hours, product FAQ, general complaint intake (no account detail read back) | No authentication |
-| **Tier 1 — Self-service, low risk** | Balance inquiry, mini statement, last transaction, cheque status, existing complaint status | Possession leg + 1 knowledge factor (see §6) |
-| **Tier 2 — Sensitive** | Card block/hotlist, cheque book request, limit change, dispute/chargeback initiation | Possession leg + MPIN/TPIN **and** OTP (both) |
+| **Tier 0 — Public** | No account detail involved (branch/ATM locator, hours, product FAQ) | No authentication |
+| **Tier 1 — Self-service, low risk** | Read-only account/service info, no instrument issued or profile changed | Possession leg + 1 knowledge factor (see §6) |
+| **Tier 2 — Sensitive** | Issues an instrument, changes a limit, or touches a dispute | Possession leg + MPIN/TPIN **and** OTP (both) |
+
+The concrete, current intent-by-intent assignment (which agent owns which
+intent, and its tier) lives in
+[`config/intent_tier_map.yaml`](../../config/intent_tier_map.yaml) — that
+file is the source of truth as intents get added; this table just defines
+what each tier means. As of now it only has Tier 1 intents (Accounts,
+Transaction, and Service agents — see that file for the full list and a
+couple of flagged classification calls worth a second look, e.g. cheque
+book request and KYC update).
 
 > Fund transfer and any money-movement intent are assumed **not exposed on
 > IVR self-service** at all (route straight to CSR or a separate app/net-banking

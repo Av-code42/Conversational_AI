@@ -1,0 +1,62 @@
+# Intent -> Agent -> Tier mapping.
+#
+# Source of truth for which agent owns an intent and what authentication
+# tier it requires. See docs/design/authentication-flow.md SS4 for what each
+# tier actually demands of the caller (SS7 for retry/lockout policy).
+#
+#   TIER_0: no authentication
+#   TIER_1: possession leg (CLI match or OTP) + 1 knowledge factor
+#   TIER_2: possession leg + MPIN/TPIN AND OTP (both)
+#
+# Only Tier 1 intents are defined so far -- extend this file as Tier 0/2
+# agents and tools are added. Keep intent ids snake_case and stable once a
+# tool is wired up to one; agents/tools should reference this id, not the
+# display_name.
+
+agents:
+  accounts_agent:
+    display_name: Accounts Agent
+    intents:
+      - id: balance_enquiry
+        display_name: Balance Enquiry
+        tier: TIER_1
+
+  transaction_agent:
+    display_name: Transaction Agent
+    intents:
+      - id: transaction_details
+        display_name: Transaction Details
+        tier: TIER_1
+      - id: statement_request
+        display_name: Statement Request
+        tier: TIER_1
+
+  service_agent:
+    display_name: Service Agent
+    intents:
+      - id: change_of_address
+        display_name: Change of Address
+        tier: TIER_1
+        note: >
+          Flagged, not blocking: address changes affect where physical
+          cards/cheque books/statements get mailed. Some banks step this up
+          to TIER_2 or refuse it on IVR entirely. Confirm TIER_1 is
+          intentional.
+      - id: cheque_book_request
+        display_name: Cheque Book Request
+        tier: TIER_1
+        note: >
+          authentication-flow.md SS4 originally listed cheque book request
+          as a TIER_2 example. This file downgrades it to TIER_1 per current
+          scoping -- doesn't move money, but does issue a new payment
+          instrument. Confirm this is an intentional change from the design
+          doc, and update SS4's example list to match once confirmed.
+      - id: kyc_update
+        display_name: KYC Update
+        tier: TIER_1
+        note: >
+          Confirm scope before build: if this intent actually modifies KYC
+          records, RBI norms typically require in-person/video
+          verification, not phone self-service. If it only registers a
+          service request for KYC re-verification (no record change via
+          IVR), TIER_1 is reasonable as-is.
