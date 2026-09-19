@@ -35,6 +35,7 @@ from twilio.twiml.voice_response import Gather, VoiceResponse  # noqa: E402
 from ivr.agents.models import AgentState, AgentStatus, DomainAgent  # noqa: E402
 from ivr.agents.registry import AgentRegistry  # noqa: E402
 from ivr.auth.cbs_dummy import DummyCBSClient  # noqa: E402
+from ivr.auth.flow import ASR_CONFIDENCE_THRESHOLD  # noqa: E402
 from ivr.auth.otp_dummy import DummyOTPGateway  # noqa: E402
 from ivr.auth.tier_config import IntentTierMap  # noqa: E402
 from ivr.banking.banking_dummy import DummyBankingClient  # noqa: E402
@@ -164,8 +165,16 @@ def _render(session: CallSession, state: CoordinatorState, *, _depth: int = 0) -
         _sessions.end(session.call_sid)
         return _hangup_response(state.prompt)
 
-    session.pending_status = state.status
-    needs_digits = state.status in (
+    # NEEDS_REPEAT (a low-confidence ASR reprompt during MPIN/OTP/
+    # identification -- see AuthFlow._guard_confidence) means "say that
+    # again" for whatever was already pending; AuthFlow's own internal stage
+    # hasn't advanced, so session.pending_status must not change either.
+    # Overwriting it here used to mean /voice/gather had nothing to dispatch
+    # the caller's next reply against, silently hanging up the call on the
+    # very turn right after any low-confidence hiccup.
+    if state.status != CoordinatorStatus.NEEDS_REPEAT:
+        session.pending_status = state.status
+    needs_digits = session.pending_status in (
         CoordinatorStatus.NEEDS_MPIN, CoordinatorStatus.NEEDS_OTP, CoordinatorStatus.NEEDS_IDENTIFICATION,
     )
     if state.status == CoordinatorStatus.NEEDS_OTP and state.cif:
@@ -266,13 +275,33 @@ async def voice_gather(request: Request) -> Response:
     if pending == CoordinatorStatus.NEEDS_IDENTIFICATION:
         digits = normalize_spoken_digits(text)
         if session.identification_step in (None, "account"):
+            # AuthFlow only guards confidence inside submit_identification
+            # (once both halves are in) -- this account-only half has no
+            # equivalent to delegate to, so it's checked here directly.
+            # Without this, a low-confidence/no-speech account answer was
+            # silently accepted and carried forward, dooming the identity
+            # match before the caller even got to the card digits.
+            if confidence < ASR_CONFIDENCE_THRESHOLD:
+                return _gather_response(
+                    "Sorry, I didn't catch that clearly. Could you say your account number again?",
+                    hints=_FACTOR_HINTS,
+                )
             session.identification_step = "card"
             session.pending_account_last6 = digits
             return _gather_response("And the last 4 digits of your card?", hints=_FACTOR_HINTS)
         account_last6 = session.pending_account_last6 or ""
-        session.identification_step = None
-        session.pending_account_last6 = None
-        return _render(session, coordinator.submit_identification(account_last6, digits, confidence=confidence))
+        result = coordinator.submit_identification(account_last6, digits, confidence=confidence)
+        if result.status != CoordinatorStatus.NEEDS_REPEAT:
+            # A real attempt was consumed (success or failure) -- clear the
+            # two-step tracking so the next attempt, if any, starts over
+            # from the account number.
+            session.identification_step = None
+            session.pending_account_last6 = None
+        # else: low-confidence hiccup on the card digits -- keep
+        # identification_step == "card" and the already-good account digits
+        # intact, so the reprompt still lands back on the card leg instead
+        # of being mistaken for a fresh account number.
+        return _render(session, result)
 
     # READY_FOR_HANDOFF/ESCALATED/CALL_ENDED are always advanced past
     # immediately by _render() -- session.pending_status should never sit on

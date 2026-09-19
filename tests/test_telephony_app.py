@@ -317,3 +317,86 @@ def test_service_request_rate_limit_escalates(client):
     res = client.post("/voice/gather", data={"CallSid": "CA1", "SpeechResult": "yes", "Confidence": "0.9"})
     assert _has_hangup(res.text)
     assert len(app_module._banking.list_service_requests("CIF1001")) == 3
+
+
+# -- NEEDS_REPEAT (low ASR confidence during MPIN/OTP/identification) -------
+#
+# Regression coverage for a bug where a low-confidence reply during MPIN,
+# OTP, or identification capture got the caller a "didn't catch that,
+# please repeat" prompt, but the *next* /voice/gather request hung up the
+# call with "something went wrong" -- session.pending_status had been
+# overwritten with CoordinatorStatus.NEEDS_REPEAT, a value voice_gather's
+# dispatch never matched against.
+
+
+def test_low_confidence_mpin_reprompt_does_not_hang_up_the_next_turn(client):
+    client.post("/voice/incoming", data={"CallSid": "CA1", "From": ASHA_MOBILE})
+    client.post("/voice/gather", data={"CallSid": "CA1", "SpeechResult": "what's my balance", "Confidence": "0.9"})
+
+    res = client.post("/voice/gather", data={"CallSid": "CA1", "SpeechResult": "four three two one", "Confidence": "0.2"})
+    assert _has_gather(res.text)
+    assert "didn't catch" in _say_text(res.text).lower()
+
+    # The very next turn used to hit the unhandled-NEEDS_REPEAT hangup here.
+    res = client.post("/voice/gather", data={"CallSid": "CA1", "SpeechResult": "four three two one", "Confidence": "0.9"})
+    assert not _has_hangup(res.text)
+    assert "45,231.50" in _say_text(res.text)
+
+
+def test_low_confidence_otp_reprompt_does_not_hang_up_the_next_turn(client):
+    client.post("/voice/incoming", data={"CallSid": "CA2"})
+    client.post("/voice/gather", data={"CallSid": "CA2", "SpeechResult": "what's my balance", "Confidence": "0.9"})
+    client.post(
+        "/voice/gather", data={"CallSid": "CA2", "SpeechResult": "seven eight nine zero one two", "Confidence": "0.9"}
+    )
+    client.post("/voice/gather", data={"CallSid": "CA2", "SpeechResult": "one one one one", "Confidence": "0.9"})
+
+    code = app_module._otp_gateway.last_code_sent_to(ASHA_MOBILE)
+    res = client.post("/voice/gather", data={"CallSid": "CA2", "SpeechResult": code, "Confidence": "0.2"})
+    assert _has_gather(res.text)
+    assert "didn't catch" in _say_text(res.text).lower()
+
+    res = client.post("/voice/gather", data={"CallSid": "CA2", "SpeechResult": code, "Confidence": "0.9"})
+    assert not _has_hangup(res.text)
+    assert "anything else" in _say_text(res.text).lower()
+
+
+def test_low_confidence_card_digits_reprompt_keeps_account_digits_and_recovers(client):
+    # This is the exact scenario reported live: account digits captured
+    # fine, then the card digits ("one one one one") came back with a
+    # low-confidence ASR reading and the call died on the next turn instead
+    # of successfully recovering.
+    client.post("/voice/incoming", data={"CallSid": "CA2"})
+    client.post("/voice/gather", data={"CallSid": "CA2", "SpeechResult": "what's my balance", "Confidence": "0.9"})
+    res = client.post(
+        "/voice/gather", data={"CallSid": "CA2", "SpeechResult": "seven eight nine zero one two", "Confidence": "0.9"}
+    )
+    assert "card" in _say_text(res.text).lower()
+
+    res = client.post("/voice/gather", data={"CallSid": "CA2", "SpeechResult": "one one one one", "Confidence": "0.2"})
+    assert not _has_hangup(res.text)
+    assert "didn't catch" in _say_text(res.text).lower()
+
+    # Repeating just the card digits (not the account number) must still
+    # resolve correctly -- the account digits captured earlier must not
+    # have been discarded by the low-confidence hiccup.
+    res = client.post("/voice/gather", data={"CallSid": "CA2", "SpeechResult": "one one one one", "Confidence": "0.9"})
+    assert not _has_hangup(res.text)
+    assert "code" in _say_text(res.text).lower()  # moved on to OTP -- identification actually resolved
+
+
+def test_low_confidence_account_digits_does_not_advance_to_card_prompt(client):
+    client.post("/voice/incoming", data={"CallSid": "CA2"})
+    client.post("/voice/gather", data={"CallSid": "CA2", "SpeechResult": "what's my balance", "Confidence": "0.9"})
+
+    res = client.post(
+        "/voice/gather", data={"CallSid": "CA2", "SpeechResult": "seven eight nine zero one two", "Confidence": "0.2"}
+    )
+    assert not _has_hangup(res.text)
+    assert "account number again" in _say_text(res.text).lower()
+    assert "card" not in _say_text(res.text).lower()
+
+    res = client.post(
+        "/voice/gather", data={"CallSid": "CA2", "SpeechResult": "seven eight nine zero one two", "Confidence": "0.9"}
+    )
+    assert "card" in _say_text(res.text).lower()
