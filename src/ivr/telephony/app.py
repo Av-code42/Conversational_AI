@@ -97,10 +97,17 @@ def _gather_action_url() -> str:
 
 
 def _gather_response(prompt: str, *, hints: str | None = None) -> Response:
+    # `hints` is only ever passed for digit-capture prompts (MPIN/OTP/
+    # identification) -- reused here as the signal to use a longer, fixed
+    # trailing-silence timeout instead of Twilio's "auto" end-of-speech
+    # detection, since a caller reciting digits from memory often pauses
+    # mid-recitation (e.g. between groups) in a way "auto" can cut off.
+    speech_timeout = config.GATHER_SPEECH_TIMEOUT_DIGITS if hints else "auto"
     vr = VoiceResponse()
     gather = Gather(
         input="speech", action=_gather_action_url(), method="POST",
-        speech_timeout="auto", language="en-IN", hints=hints,
+        timeout=config.GATHER_TIMEOUT_SECONDS, speech_timeout=speech_timeout,
+        language="en-IN", hints=hints,
     )
     gather.say(prompt)
     vr.append(gather)

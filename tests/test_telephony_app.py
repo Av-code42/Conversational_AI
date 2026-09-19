@@ -64,6 +64,10 @@ def _gather_action(xml_text: str) -> str:
     return ET.fromstring(xml_text).find(".//Gather").get("action")
 
 
+def _gather_attrs(xml_text: str) -> dict:
+    return dict(ET.fromstring(xml_text).find(".//Gather").attrib)
+
+
 def test_health(client):
     assert client.get("/health").json() == {"status": "ok"}
 
@@ -94,6 +98,26 @@ def test_gather_action_is_absolute_when_public_base_url_set(client, monkeypatch)
     monkeypatch.setattr(app_module.config, "PUBLIC_BASE_URL", "https://example.ngrok.io")
     res = client.post("/voice/incoming", data={"CallSid": "CA1"})
     assert _gather_action(res.text) == "https://example.ngrok.io/voice/gather"
+
+
+def test_intent_capture_uses_auto_speech_timeout(client):
+    # Natural language doesn't pause mid-utterance the way digit recitation
+    # does -- "auto" (Twilio's own end-of-speech detection) is fine here.
+    res = client.post("/voice/incoming", data={"CallSid": "CA1"})
+    attrs = _gather_attrs(res.text)
+    assert attrs["speechTimeout"] == "auto"
+    assert attrs["timeout"] == str(app_module.config.GATHER_TIMEOUT_SECONDS)
+
+
+def test_digit_capture_uses_longer_fixed_speech_timeout(client):
+    # A caller reciting an MPIN/OTP/account number from memory often pauses
+    # mid-recitation -- "auto" can cut that off early. Applies to any prompt
+    # that also carries digit hints (MPIN/OTP/identification).
+    client.post("/voice/incoming", data={"CallSid": "CA1", "From": ASHA_MOBILE})
+    res = client.post("/voice/gather", data={"CallSid": "CA1", "SpeechResult": "what's my balance", "Confidence": "0.9"})
+    attrs = _gather_attrs(res.text)
+    assert attrs["speechTimeout"] == app_module.config.GATHER_SPEECH_TIMEOUT_DIGITS
+    assert attrs["hints"]
 
 
 def test_missing_call_sid_on_incoming_is_rejected(client):

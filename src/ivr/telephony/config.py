@@ -44,3 +44,18 @@ PUBLIC_BASE_URL: str = os.environ.get("PUBLIC_BASE_URL", "")
 # escalation just speaks the escalation prompt and hangs up -- there's no
 # real CSR queue to transfer to in this dev setup.
 CSR_TRANSFER_NUMBER: str = os.environ.get("CSR_TRANSFER_NUMBER", "")
+
+# How long (seconds) Twilio's <Gather> waits for the caller to START
+# speaking at all before giving up (Twilio's own default is 5, which is
+# tight for someone pausing to recall a PIN or account number before
+# speaking). Applies to every prompt.
+GATHER_TIMEOUT_SECONDS: int = int(os.environ.get("GATHER_TIMEOUT_SECONDS", "8"))
+
+# How long (seconds) of trailing silence Twilio treats as "the caller has
+# finished speaking" once they've started, for prompts capturing digits
+# (MPIN/OTP/account/card) specifically -- "auto" (Twilio's own end-of-speech
+# detection) can cut off a caller who pauses mid-recitation, e.g. reading
+# digits in two groups. Intent-capture and free-text prompts (an address)
+# keep using "auto", since natural language doesn't have this pattern the
+# same way digit strings do.
+GATHER_SPEECH_TIMEOUT_DIGITS: str = os.environ.get("GATHER_SPEECH_TIMEOUT_DIGITS", "3")
