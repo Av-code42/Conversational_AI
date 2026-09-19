@@ -113,11 +113,14 @@ class AuthFlow:
         self._stage = _Stage.AWAITING_IDENTIFICATION
         return self._state(
             AuthStatus.NEEDS_IDENTIFICATION,
-            prompt=(
-                "I couldn't verify your number automatically. Please say the "
-                "last 6 digits of your account number, and the last 4 digits "
-                "of your card."
-            ),
+            # One thing at a time -- the telephony layer captures account and
+            # card digits as two separate turns (app.py's identification_step),
+            # so this must only ask for the first of them. Asking for both in
+            # one sentence invites the caller to say both back at once, which
+            # gets misread as the account number alone (see
+            # digit_normalizer.py's module docstring for the concatenation
+            # problem that causes).
+            prompt="I couldn't verify your number automatically. Please say the last 6 digits of your account number.",
         )
 
     # -- submissions -----------------------------------------------------
@@ -136,7 +139,7 @@ class AuthFlow:
                 return self._escalate(EscalationReason.CANNOT_IDENTIFY_CALLER)
             return self._state(
                 AuthStatus.NEEDS_IDENTIFICATION,
-                prompt="I couldn't find an account matching that. Please say the digits again.",
+                prompt="I couldn't find an account matching that. Let's try again -- please say the last 6 digits of your account number.",
             )
 
         self._cif = cif
