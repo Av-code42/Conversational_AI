@@ -23,19 +23,23 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import Response
-from twilio.request_validator import RequestValidator
-from twilio.twiml.voice_response import Gather, VoiceResponse
+from dotenv import load_dotenv
 
-from ivr.auth.cbs_dummy import DummyCBSClient
-from ivr.auth.otp_dummy import DummyOTPGateway
-from ivr.auth.tier_config import IntentTierMap
-from ivr.coordinator.build_intent_classifier import build_intent_classifier
-from ivr.coordinator.flow import CoordinatorFlow, CoordinatorState, CoordinatorStatus
-from ivr.telephony import config
-from ivr.telephony.digit_normalizer import normalize_spoken_digits
-from ivr.telephony.session_store import CallSession, SessionStore
+load_dotenv()  # must run before any ivr.* import below -- config modules read os.environ at import time
+
+from fastapi import FastAPI, HTTPException, Request  # noqa: E402
+from fastapi.responses import Response  # noqa: E402
+from twilio.request_validator import RequestValidator  # noqa: E402
+from twilio.twiml.voice_response import Gather, VoiceResponse  # noqa: E402
+
+from ivr.auth.cbs_dummy import DummyCBSClient  # noqa: E402
+from ivr.auth.otp_dummy import DummyOTPGateway  # noqa: E402
+from ivr.auth.tier_config import IntentTierMap  # noqa: E402
+from ivr.coordinator.build_intent_classifier import build_intent_classifier  # noqa: E402
+from ivr.coordinator.flow import CoordinatorFlow, CoordinatorState, CoordinatorStatus  # noqa: E402
+from ivr.telephony import config  # noqa: E402
+from ivr.telephony.digit_normalizer import normalize_spoken_digits  # noqa: E402
+from ivr.telephony.session_store import CallSession, SessionStore  # noqa: E402
 
 logging.basicConfig(level=logging.INFO)  # otherwise the fake-OTP dev logging below is silently swallowed
 logger = logging.getLogger("ivr.telephony")

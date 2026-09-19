@@ -19,6 +19,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+from dotenv import load_dotenv  # noqa: E402
+
+load_dotenv()  # must run before any ivr.* import below -- config modules read os.environ at import time
+
 from ivr.auth.cbs_dummy import DummyCBSClient  # noqa: E402
 from ivr.auth.otp_dummy import DummyOTPGateway  # noqa: E402
 from ivr.auth.tier_config import IntentTierMap  # noqa: E402
