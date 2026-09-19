@@ -6,7 +6,18 @@ interact. Builds directly on
 [`authentication-flow.md`](authentication-flow.md) (auth mechanics) and
 [`config/intent_tier_map.yaml`](../../config/intent_tier_map.yaml) (intent
 ownership + tier — this doc treats that file as the routing table too).
-**Status**: Draft for review.
+**Status**: Implemented (`src/ivr/coordinator/`, `src/ivr/agents/`,
+`src/ivr/banking/`) and wired into both the CLI harness and the Twilio
+telephony app. Known v1 simplifications, each flagged in its own module
+rather than silently decided: mid-call tier step-up re-runs auth from
+scratch instead of only the delta (§5); Accounts/Transaction Agent tools
+have no slot-filling and use fixed defaults (last 5 transactions, last 30
+days) since none of today's Tier 1 tools strictly need it; Service Agent's
+change_of_address is the one tool with real multi-turn slot-filling,
+including topic-switch detection via the same intent classifier used at
+intent capture. §8's remaining open questions (identity re-verification on
+topic switch, "anything else?" context retention, framework choice) are
+still open.
 
 ## 1. Goals
 
@@ -183,11 +194,21 @@ what authentication-flow.md §8 already specifies.
 
 ## 9. Next Steps
 
+Done: shared global-command module, Coordinator, all three domain agents,
+CBS/OTP/banking dummies, CLI harness, Twilio telephony integration, LLM-based
+intent classification.
+
+Remaining:
 - Confirm remaining §8 items with the team (#2–#4).
-- Build the shared global-command module (§3.5, §4) first, before any domain
-  agent — every domain agent depends on it from turn one under the direct-
-  handoff model, so it can't be an afterthought bolted on later.
 - Extend `config/intent_tier_map.yaml` once Tier 2 agents/tools exist, so
-  §5's step-up logic has real cases to design against.
-- Build the Coordinator + one domain agent (Accounts — smallest surface) as
-  a first vertical slice, with CBS calls stubbed.
+  §5's step-up logic has real cases to design against (currently untestable
+  against the real catalog — only the synthetic test fixture exercises it).
+- Fix mid-call step-up to re-run only the delta instead of full
+  re-authentication, before Tier 2 intents actually ship (flagged in
+  `coordinator/flow.py`'s module docstring).
+- Add slot-filling to Accounts/Transaction Agent tools if/when a real
+  product need appears (e.g. a caller asking for a specific date range) --
+  today's fixed defaults are a deliberate v1 simplification, not a gap
+  anyone's hit yet.
+- Real CBS/banking integration to replace the dummies, once those API
+  contracts exist.

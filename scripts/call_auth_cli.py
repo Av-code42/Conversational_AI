@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Interactive CLI harness for CoordinatorFlow (greeting -> intent capture ->
-AuthFlow's auth gate -> handoff -> "anything else?" loop) -- type responses
-instead of speaking them, "fake SMS" printed to the console instead of a
-real OTP gateway. No telephony or ASR/TTS involved. Intent capture uses
-real Groq-based LLM classification if GROQ_API_KEY is set, falling back to
-keyword matching otherwise -- see build_intent_classifier.py. There's no
-real domain agent to actually run a tool once handed off -- this simulates
-that completing instantly so the "anything else?" loop is exercisable.
+AuthFlow's auth gate -> handoff -> real domain agent -> "anything else?"
+loop) -- type responses instead of speaking them, "fake SMS" printed to the
+console instead of a real OTP gateway. No telephony or ASR/TTS involved.
+Intent capture uses real Groq-based LLM classification if GROQ_API_KEY is
+set, falling back to keyword matching otherwise -- see
+build_intent_classifier.py. Domain agents are real (dummy-data-backed) --
+see ivr.agents -- so a balance enquiry returns an actual number and a
+change-of-address actually asks for and records the new address.
 
 Run from the repo root:
     python scripts/call_auth_cli.py
@@ -23,11 +24,14 @@ from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv()  # must run before any ivr.* import below -- config modules read os.environ at import time
 
+from ivr.agents.models import AgentStatus, DomainAgent  # noqa: E402
+from ivr.agents.registry import AgentRegistry  # noqa: E402
 from ivr.auth.cbs_dummy import DummyCBSClient  # noqa: E402
 from ivr.auth.otp_dummy import DummyOTPGateway  # noqa: E402
 from ivr.auth.tier_config import IntentTierMap  # noqa: E402
+from ivr.banking.banking_dummy import DummyBankingClient  # noqa: E402
 from ivr.coordinator.build_intent_classifier import build_intent_classifier  # noqa: E402
-from ivr.coordinator.flow import CoordinatorFlow, CoordinatorStatus  # noqa: E402
+from ivr.coordinator.flow import CoordinatorFlow, CoordinatorState, CoordinatorStatus  # noqa: E402
 
 
 def print_customer_directory(cbs: DummyCBSClient) -> None:
@@ -66,7 +70,31 @@ def prompt_input(label: str) -> tuple[str, float]:
     return raw, 1.0
 
 
-def run_call(cbs: DummyCBSClient, otp_gateway: DummyOTPGateway, coordinator: CoordinatorFlow, ani: str | None) -> None:
+def drive_agent(coordinator: CoordinatorFlow, agent: DomainAgent, agent_state) -> CoordinatorState:
+    """Runs an agent's own NEEDS_INPUT loop via the terminal (e.g. Service
+    Agent asking for a new address) until it reaches COMPLETED/
+    NEED_HANDOFF/ESCALATE, then reports the outcome back to the Coordinator
+    (agent-architecture.md SS4) and returns the resulting CoordinatorState."""
+    while True:
+        if agent_state.status == AgentStatus.COMPLETED:
+            print(f"\nAgent: {agent_state.prompt}")
+            return coordinator.mark_task_completed()
+
+        if agent_state.status == AgentStatus.NEEDS_INPUT:
+            print(f"\nAgent: {agent_state.prompt}")
+            text, confidence = prompt_input("You")
+            agent_state = agent.submit_input(text, confidence=confidence)
+            continue
+
+        if agent_state.status == AgentStatus.NEED_HANDOFF:
+            print(f"\n>>> (agent handing back to Coordinator for '{agent_state.new_intent_id}') <<<")
+            return coordinator.route_intent(agent_state.new_intent_id)
+
+        return coordinator.escalate_from_agent(agent_state.escalation_reason or "unknown")  # ESCALATE
+
+
+def run_call(cbs: DummyCBSClient, otp_gateway: DummyOTPGateway, agent_registry: AgentRegistry,
+             coordinator: CoordinatorFlow, ani: str | None) -> None:
     state = coordinator.start(ani=ani)
 
     while True:
@@ -102,21 +130,16 @@ def run_call(cbs: DummyCBSClient, otp_gateway: DummyOTPGateway, coordinator: Coo
             state = coordinator.submit_otp(otp, confidence=confidence)
 
         elif state.status == CoordinatorStatus.READY_FOR_HANDOFF:
-            print(
-                f"\n>>> Routed to {state.agent_id} for '{state.intent_id}' "
-                f"(authenticated at {state.tier_achieved.value}). "
-                f"No real domain agent exists yet, so simulating it completing instantly. <<<"
-            )
-            again = input("Press Enter to continue the call, or type 'quit' to end it: ").strip()
-            if again.lower() == "quit":
-                print("\n=== Call ended by caller ===")
-                return
-            state = coordinator.mark_task_completed()
+            print(f"\n>>> Routed to {state.agent_id} for '{state.intent_id}' "
+                  f"(authenticated at {state.tier_achieved.value}) <<<")
+            agent = agent_registry.create(state.agent_id)
+            agent_state = agent.start(state.intent_id, state.cif)
+            state = drive_agent(coordinator, agent, agent_state)
 
         elif state.status == CoordinatorStatus.ESCALATED:
             print(f"\n=== Call ended: escalated to CSR ===")
-            print(f"Internal reason: {state.escalation_reason.value}"
-                  + (f" ({state.auth_escalation_reason.value})" if state.auth_escalation_reason else ""))
+            detail = state.auth_escalation_reason.value if state.auth_escalation_reason else state.agent_escalation_reason
+            print(f"Internal reason: {state.escalation_reason.value}" + (f" ({detail})" if detail else ""))
             return
 
         elif state.status == CoordinatorStatus.CALL_ENDED:
@@ -130,8 +153,10 @@ def run_call(cbs: DummyCBSClient, otp_gateway: DummyOTPGateway, coordinator: Coo
 def main() -> None:
     cbs = DummyCBSClient()
     otp_gateway = DummyOTPGateway()
+    banking = DummyBankingClient()
     tier_map = IntentTierMap.load()
     intent_classifier = build_intent_classifier(tier_map)
+    agent_registry = AgentRegistry(banking, intent_classifier)
 
     print("=== ABC Retail Bank IVR -- interactive CLI harness ===")
     print("No telephony/ASR/TTS here -- CoordinatorFlow driven directly, turn by turn.")
@@ -147,7 +172,7 @@ def main() -> None:
         if ani.lower() == "quit":
             break
         coordinator = CoordinatorFlow(cbs=cbs, otp_gateway=otp_gateway, tier_map=tier_map, intent_classifier=intent_classifier)
-        run_call(cbs, otp_gateway, coordinator, ani or None)
+        run_call(cbs, otp_gateway, agent_registry, coordinator, ani or None)
 
 
 if __name__ == "__main__":

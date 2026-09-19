@@ -1,8 +1,10 @@
 """Exercises CoordinatorFlow per docs/design/agent-architecture.md SS3:
 greeting, intent capture, routing + the auth gate (delegating to the
 already-tested AuthFlow), handoff, and the "anything else?" loop via
-mark_task_completed() (there's no real domain agent yet to call that for
-us).
+mark_task_completed(). route_intent()/escalate_from_agent() are what a real
+domain agent calls back with (agent-architecture.md SS4); tested directly
+here since ivr.agents' own tests cover when an agent decides to call them,
+not what CoordinatorFlow does once they're called.
 """
 
 import pytest
@@ -174,3 +176,36 @@ def test_saying_no_on_the_very_first_turn_does_not_end_the_call(coordinator):
     coordinator.start(ani=ASHA_MOBILE)
     state = coordinator.submit_utterance("no idea what to do")
     assert state.status == CoordinatorStatus.NEEDS_INTENT
+
+
+def test_route_intent_hands_off_directly_when_already_authenticated(coordinator):
+    coordinator.start(ani=ASHA_MOBILE)
+    coordinator.submit_utterance("what's my balance")
+    coordinator.submit_mpin("4321")  # tier_achieved = TIER_1
+
+    # Simulates a domain agent's NEED_HANDOFF with an already-classified
+    # intent -- same-tier, so no re-auth prompt.
+    state = coordinator.route_intent("statement_request")
+    assert state.status == CoordinatorStatus.READY_FOR_HANDOFF
+    assert state.intent_id == "statement_request"
+    assert state.agent_id == "transaction_agent"
+
+
+def test_route_intent_still_gates_on_tier_for_an_unauthenticated_caller(coordinator):
+    # route_intent() reuses the exact same auth-gate path a fresh utterance
+    # goes through -- it doesn't bypass authentication just because an
+    # agent (rather than the caller directly) triggered the routing.
+    coordinator.start(ani=ASHA_MOBILE)
+    state = coordinator.route_intent("balance_enquiry")
+    assert state.status == CoordinatorStatus.NEEDS_MPIN
+
+
+def test_escalate_from_agent_sets_reason(coordinator):
+    coordinator.start(ani=ASHA_MOBILE)
+    coordinator.submit_utterance("what's my balance")
+    coordinator.submit_mpin("4321")
+
+    state = coordinator.escalate_from_agent("low_confidence_exceeded")
+    assert state.status == CoordinatorStatus.ESCALATED
+    assert state.escalation_reason == CoordinatorEscalationReason.AGENT_ESCALATED
+    assert state.agent_escalation_reason == "low_confidence_exceeded"

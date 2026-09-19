@@ -11,8 +11,10 @@ import xml.etree.ElementTree as ET
 import pytest
 from fastapi.testclient import TestClient
 
+from ivr.agents.registry import AgentRegistry
 from ivr.auth.cbs_dummy import DummyCBSClient
 from ivr.auth.otp_dummy import DummyOTPGateway
+from ivr.banking.banking_dummy import DummyBankingClient
 from ivr.telephony import app as app_module
 from ivr.telephony.session_store import SessionStore
 
@@ -23,11 +25,16 @@ MEERA_MOBILE = "9876500003"  # watchlist-flagged account
 
 @pytest.fixture(autouse=True)
 def isolated_app_state(monkeypatch):
-    """app.py holds module-level singleton CBS/OTP/session state, same as a
-    real running service would -- reset it before every test so MPIN-fail
-    counts, OTP codes, and sessions from one test never leak into another."""
+    """app.py holds module-level singleton CBS/OTP/banking/session state,
+    same as a real running service would -- reset it before every test so
+    MPIN-fail counts, OTP codes, service-request tickets, and sessions from
+    one test never leak into another. _agent_registry is rebuilt too since
+    it captured _banking by reference at construction time -- patching
+    _banking alone wouldn't actually reach it."""
     monkeypatch.setattr(app_module, "_cbs", DummyCBSClient())
     monkeypatch.setattr(app_module, "_otp_gateway", DummyOTPGateway())
+    monkeypatch.setattr(app_module, "_banking", DummyBankingClient())
+    monkeypatch.setattr(app_module, "_agent_registry", AgentRegistry(app_module._banking, app_module._intent_classifier))
     monkeypatch.setattr(app_module, "_sessions", SessionStore())
 
 
@@ -100,6 +107,9 @@ def test_full_tier1_cli_matched_happy_path(client):
     assert "MPIN" in _say_text(res.text)
 
     res = client.post("/voice/gather", data={"CallSid": "CA1", "SpeechResult": "four three two one", "Confidence": "0.9"})
+    # The Accounts Agent is real now -- this should be an actual balance, not
+    # a placeholder skipping straight to "anything else?".
+    assert "45,231.50" in _say_text(res.text)
     assert "anything else" in _say_text(res.text).lower()
     assert _has_gather(res.text)
 
@@ -192,3 +202,42 @@ def test_status_callback_ends_session(client):
     res = client.post("/voice/status", data={"CallSid": "CA1", "CallStatus": "completed"})
     assert res.status_code == 204
     assert app_module._sessions.get("CA1") is None
+
+
+# -- Domain agents (real, dummy-data-backed -- not the old fake-instant-completion placeholder) --
+
+
+def test_change_of_address_slot_filling_records_a_ticket(client):
+    client.post("/voice/incoming", data={"CallSid": "CA1", "From": ASHA_MOBILE})
+    client.post("/voice/gather", data={"CallSid": "CA1", "SpeechResult": "I need to update my address", "Confidence": "0.9"})
+    res = client.post("/voice/gather", data={"CallSid": "CA1", "SpeechResult": "four three two one", "Confidence": "0.9"})
+    assert "new address" in _say_text(res.text).lower()
+
+    res = client.post(
+        "/voice/gather", data={"CallSid": "CA1", "SpeechResult": "221B Baker Street, Mumbai", "Confidence": "0.9"}
+    )
+    assert "updated your address" in _say_text(res.text).lower()
+    assert "anything else" in _say_text(res.text).lower()
+    ticket = app_module._banking.list_service_requests("CIF1001")[0]
+    assert ticket.details["new_address"] == "221B Baker Street, Mumbai"
+
+
+def test_topic_switch_during_address_slot_filling_reroutes(client):
+    client.post("/voice/incoming", data={"CallSid": "CA1", "From": ASHA_MOBILE})
+    client.post("/voice/gather", data={"CallSid": "CA1", "SpeechResult": "I need to update my address", "Confidence": "0.9"})
+    client.post("/voice/gather", data={"CallSid": "CA1", "SpeechResult": "four three two one", "Confidence": "0.9"})
+
+    res = client.post(
+        "/voice/gather", data={"CallSid": "CA1", "SpeechResult": "actually what's my balance", "Confidence": "0.9"}
+    )
+    # Re-routed to the Accounts Agent instead of saving that sentence as an address.
+    assert "45,231.50" in _say_text(res.text)
+    assert app_module._banking.list_service_requests("CIF1001") == []
+
+
+def test_cheque_book_request_is_zero_slot_and_completes_immediately(client):
+    client.post("/voice/incoming", data={"CallSid": "CA1", "From": ASHA_MOBILE})
+    client.post("/voice/gather", data={"CallSid": "CA1", "SpeechResult": "I'd like a new chequebook", "Confidence": "0.9"})
+    res = client.post("/voice/gather", data={"CallSid": "CA1", "SpeechResult": "four three two one", "Confidence": "0.9"})
+    assert "cheque book request is confirmed" in _say_text(res.text).lower()
+    assert app_module._banking.list_service_requests("CIF1001")[0].kind == "cheque_book_request"

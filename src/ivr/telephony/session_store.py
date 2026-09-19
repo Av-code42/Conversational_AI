@@ -10,6 +10,11 @@ wants account-last6 and card-last4 together in one call
 question per turn -- so this layer asks for them as two separate prompts
 and holds the first answer until the second arrives, then calls
 CoordinatorFlow.submit_identification() once with both.
+
+active_agent tracks whether a domain agent currently owns the turn (e.g.
+ServiceAgent mid-way through asking for a new address) -- when set, the
+next utterance goes to active_agent.submit_input() instead of the
+Coordinator. None means the Coordinator/AuthFlow owns the turn instead.
 """
 
 from __future__ import annotations
@@ -17,6 +22,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from ivr.agents.models import DomainAgent
 from ivr.coordinator.flow import CoordinatorFlow, CoordinatorStatus
 
 
@@ -27,6 +33,7 @@ class CallSession:
     pending_status: CoordinatorStatus = CoordinatorStatus.NEEDS_INTENT
     identification_step: Literal["account", "card"] | None = None
     pending_account_last6: str | None = None
+    active_agent: DomainAgent | None = None
 
 
 class SessionStore:

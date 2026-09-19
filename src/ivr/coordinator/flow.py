@@ -4,12 +4,16 @@ from config/intent_tier_map.yaml (via IntentTierMap, tier_config.py), running
 AuthFlow as a gate before handoff, and owning global commands and escalation
 centrally for its own turns.
 
-No domain agent (Accounts/Transaction/Service) exists in code yet -- this
-stops at "authenticated and ready to hand off to <agent_id> for <intent_id>"
-(CoordinatorStatus.READY_FOR_HANDOFF). Call mark_task_completed() to
-simulate a domain agent finishing its work and returning control, so the
-"anything else?" loop (agent-architecture.md SS3 step 6) is exercisable
-before a real domain agent exists.
+CoordinatorFlow stops at "authenticated and ready to hand off to <agent_id>
+for <intent_id>" (CoordinatorStatus.READY_FOR_HANDOFF) -- it never
+instantiates or drives a domain agent itself; the telephony app / CLI
+harness do that (see agents/registry.py), then report back via one of:
+  - mark_task_completed() -- domain agent returned COMPLETED
+  - route_intent(new_intent_id) -- domain agent returned NEED_HANDOFF with
+    an already-classified intent (e.g. a topic switch mid slot-filling);
+    reuses the exact same tier-check/auth-gate logic a fresh utterance
+    goes through, so SS5's mid-call step-up applies here too
+  - escalate_from_agent(reason) -- domain agent returned ESCALATE
 
 Known simplification, flagged rather than silently done differently: mid-
 call tier step-up (agent-architecture.md SS5) is supposed to re-run
@@ -63,6 +67,7 @@ class CoordinatorEscalationReason(str, Enum):
     EXPLICIT_REQUEST = "explicit_request"  # caller asked for a human, at intent capture
     INTENT_NOT_UNDERSTOOD = "intent_not_understood"
     AUTH_ESCALATED = "auth_escalated"  # AuthFlow escalated; see CoordinatorState.auth_escalation_reason
+    AGENT_ESCALATED = "agent_escalated"  # a domain agent returned ESCALATE; see CoordinatorState.agent_escalation_reason
 
 
 @dataclass
@@ -76,6 +81,7 @@ class CoordinatorState:
     cif: str | None = None
     escalation_reason: CoordinatorEscalationReason | None = None
     auth_escalation_reason: EscalationReason | None = None
+    agent_escalation_reason: str | None = None
 
 
 @dataclass
@@ -179,10 +185,21 @@ class CoordinatorFlow:
     # -- regaining control after a (simulated) domain agent -------------------
 
     def mark_task_completed(self) -> CoordinatorState:
-        """Simulates a domain agent returning COMPLETED (agent-architecture.md
-        SS4) -- there's no real domain agent yet to call this for us."""
+        """A domain agent returned COMPLETED (agent-architecture.md SS4)."""
         self._auth = None
         return self._to_intent_capture(ANYTHING_ELSE_PROMPT)
+
+    def route_intent(self, intent_id: str) -> CoordinatorState:
+        """A domain agent returned NEED_HANDOFF with an already-classified
+        intent_id (agent-architecture.md SS4) -- e.g. the caller said
+        something else entirely mid slot-filling. Reuses the exact same
+        routing/auth-gate path a fresh utterance goes through, so mid-call
+        tier step-up (SS5) applies here too."""
+        return self._route(intent_id)
+
+    def escalate_from_agent(self, reason: str) -> CoordinatorState:
+        """A domain agent returned ESCALATE (agent-architecture.md SS4/SS7)."""
+        return self._escalate(CoordinatorEscalationReason.AGENT_ESCALATED, agent_escalation_reason=reason)
 
     # -- internal -------------------------------------------------------
 
@@ -219,13 +236,15 @@ class CoordinatorFlow:
             cif=self._cif,
         )
 
-    def _escalate(self, reason: CoordinatorEscalationReason, *, auth_escalation_reason: EscalationReason | None = None) -> CoordinatorState:
+    def _escalate(self, reason: CoordinatorEscalationReason, *, auth_escalation_reason: EscalationReason | None = None,
+                  agent_escalation_reason: str | None = None) -> CoordinatorState:
         self._auth = None
         return CoordinatorState(
             status=CoordinatorStatus.ESCALATED,
             prompt=GENERIC_ESCALATION_PROMPT,
             escalation_reason=reason,
             auth_escalation_reason=auth_escalation_reason,
+            agent_escalation_reason=agent_escalation_reason,
             tier_achieved=self._tier_achieved,
             cif=self._cif,
         )

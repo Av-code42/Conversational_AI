@@ -32,9 +32,12 @@ from fastapi.responses import Response  # noqa: E402
 from twilio.request_validator import RequestValidator  # noqa: E402
 from twilio.twiml.voice_response import Gather, VoiceResponse  # noqa: E402
 
+from ivr.agents.models import AgentState, AgentStatus, DomainAgent  # noqa: E402
+from ivr.agents.registry import AgentRegistry  # noqa: E402
 from ivr.auth.cbs_dummy import DummyCBSClient  # noqa: E402
 from ivr.auth.otp_dummy import DummyOTPGateway  # noqa: E402
 from ivr.auth.tier_config import IntentTierMap  # noqa: E402
+from ivr.banking.banking_dummy import DummyBankingClient  # noqa: E402
 from ivr.coordinator.build_intent_classifier import build_intent_classifier  # noqa: E402
 from ivr.coordinator.flow import CoordinatorFlow, CoordinatorState, CoordinatorStatus  # noqa: E402
 from ivr.telephony import config  # noqa: E402
@@ -46,15 +49,18 @@ logger = logging.getLogger("ivr.telephony")
 
 app = FastAPI(title="ABC Retail Bank IVR -- Twilio webhook service")
 
-# Shared, module-level backends -- CBS/OTP are the same dummy data the CLI
-# harness and test suite use; intent classification is real Groq-based LLM
-# classification if GROQ_API_KEY is set (build_intent_classifier.py), else
-# keyword matching. A real deployment would inject real CBS/OTP clients
-# here instead; nothing else in this file would need to change.
+# Shared, module-level backends -- CBS/OTP/banking are the same dummy data
+# the CLI harness and test suite use; intent classification is real
+# Groq-based LLM classification if GROQ_API_KEY is set
+# (build_intent_classifier.py), else keyword matching. A real deployment
+# would inject real CBS/OTP/banking clients here instead; nothing else in
+# this file would need to change.
 _cbs = DummyCBSClient()
 _otp_gateway = DummyOTPGateway()
+_banking = DummyBankingClient()
 _tier_map = IntentTierMap.load()
 _intent_classifier = build_intent_classifier(_tier_map)
+_agent_registry = AgentRegistry(_banking, _intent_classifier)
 _sessions = SessionStore()
 
 _FACTOR_HINTS = "zero,one,two,three,four,five,six,seven,eight,nine,resend"
@@ -117,20 +123,26 @@ def _hangup_response(prompt: str | None, *, transfer_to_csr: bool = False) -> Re
     return _xml(vr)
 
 
-def _render(session: CallSession, state: CoordinatorState) -> Response:
+_MAX_RENDER_DEPTH = 5  # defensive guard against an agent<->Coordinator handoff loop; never expected in practice
+
+
+def _render(session: CallSession, state: CoordinatorState, *, _depth: int = 0) -> Response:
     """Turns a CoordinatorState into the next TwiML response, advancing
-    session.pending_status to match."""
+    session.pending_status to match. Recurses (bounded) through
+    _render_agent when a domain agent hands back an already-classified
+    intent (NEED_HANDOFF) or an escalation, since either can produce a new
+    CoordinatorState that itself needs rendering."""
+    if _depth > _MAX_RENDER_DEPTH:
+        logger.error("call %s: _render recursion guard hit -- possible agent<->Coordinator loop", session.call_sid)
+        _sessions.end(session.call_sid)
+        return _hangup_response("Sorry, something went wrong with this call. Please call back.")
+
     if state.status == CoordinatorStatus.READY_FOR_HANDOFF:
-        # Placeholder script -- no real domain agent exists yet to actually
-        # serve the intent. Logged for developer visibility only; a real
-        # caller should never hear about implementation status.
-        logger.info(
-            "call %s: handed off to %s for '%s' (tier %s) -- no real domain agent, simulating completion",
-            session.call_sid, state.agent_id, state.intent_id, state.tier_achieved,
-        )
-        next_state = session.coordinator.mark_task_completed()
-        session.pending_status = next_state.status
-        return _gather_response(next_state.prompt or "Is there anything else I can help you with?")
+        logger.info("call %s: handed off to %s for '%s' (tier %s)",
+                    session.call_sid, state.agent_id, state.intent_id, state.tier_achieved)
+        agent = _agent_registry.create(state.agent_id)
+        agent_state = agent.start(state.intent_id, state.cif)
+        return _render_agent(session, agent, agent_state, _depth=_depth)
 
     if state.status == CoordinatorStatus.ESCALATED:
         session.pending_status = state.status
@@ -158,6 +170,33 @@ def _render(session: CallSession, state: CoordinatorState) -> Response:
             except LookupError:
                 pass
     return _gather_response(state.prompt or "", hints=_FACTOR_HINTS if needs_digits else None)
+
+
+def _render_agent(session: CallSession, agent: DomainAgent, agent_state: AgentState, *, _depth: int = 0) -> Response:
+    """Turns an AgentState into the next TwiML response, or hands back to
+    the Coordinator (agent-architecture.md SS4's COMPLETED/NEED_HANDOFF/
+    ESCALATE contract)."""
+    if agent_state.status == AgentStatus.COMPLETED:
+        session.active_agent = None
+        next_state = session.coordinator.mark_task_completed()
+        session.pending_status = next_state.status
+        combined_prompt = " ".join(p for p in (agent_state.prompt, next_state.prompt) if p)
+        return _gather_response(combined_prompt)
+
+    if agent_state.status == AgentStatus.NEEDS_INPUT:
+        session.active_agent = agent
+        return _gather_response(agent_state.prompt or "")  # free-text slot (e.g. an address) -- no digit hints
+
+    if agent_state.status == AgentStatus.NEED_HANDOFF:
+        session.active_agent = None
+        logger.info("call %s: agent requested handoff to intent '%s'", session.call_sid, agent_state.new_intent_id)
+        next_state = session.coordinator.route_intent(agent_state.new_intent_id)
+        return _render(session, next_state, _depth=_depth + 1)
+
+    # ESCALATE
+    session.active_agent = None
+    next_state = session.coordinator.escalate_from_agent(agent_state.escalation_reason or "unknown")
+    return _render(session, next_state, _depth=_depth + 1)
 
 
 @app.post("/voice/incoming")
@@ -194,6 +233,10 @@ async def voice_gather(request: Request) -> Response:
         confidence = float(form.get("Confidence") or 0)
     except ValueError:
         confidence = 0.0
+
+    if session.active_agent is not None:
+        agent_state = session.active_agent.submit_input(text, confidence=confidence)
+        return _render_agent(session, session.active_agent, agent_state)
 
     coordinator = session.coordinator
     pending = session.pending_status
