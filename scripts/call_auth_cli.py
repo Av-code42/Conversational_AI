@@ -156,7 +156,6 @@ def main() -> None:
     banking = DummyBankingClient()
     tier_map = IntentTierMap.load()
     intent_classifier = build_intent_classifier(tier_map)
-    agent_registry = AgentRegistry(banking, intent_classifier)
 
     print("=== ABC Retail Bank IVR -- interactive CLI harness ===")
     print("No telephony/ASR/TTS here -- CoordinatorFlow driven directly, turn by turn.")
@@ -171,7 +170,10 @@ def main() -> None:
         ani = input("\nNew call -- calling from (mobile number, or blank for no caller ID), 'quit' to exit: ").strip()
         if ani.lower() == "quit":
             break
+        # Fresh per call, not reused across calls -- AgentRegistry owns a
+        # ServiceRequestLimiter that must reset for each new call.
         coordinator = CoordinatorFlow(cbs=cbs, otp_gateway=otp_gateway, tier_map=tier_map, intent_classifier=intent_classifier)
+        agent_registry = AgentRegistry(banking, intent_classifier)
         run_call(cbs, otp_gateway, agent_registry, coordinator, ani or None)
 
 

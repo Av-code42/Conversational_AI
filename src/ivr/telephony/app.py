@@ -60,8 +60,11 @@ _otp_gateway = DummyOTPGateway()
 _banking = DummyBankingClient()
 _tier_map = IntentTierMap.load()
 _intent_classifier = build_intent_classifier(_tier_map)
-_agent_registry = AgentRegistry(_banking, _intent_classifier)
 _sessions = SessionStore()
+
+# NOT module-level: AgentRegistry owns a per-call ServiceRequestLimiter
+# (agents/rate_limit.py) and must be constructed fresh for each call --
+# see voice_incoming() below -- same reasoning as CoordinatorFlow.
 
 _FACTOR_HINTS = "zero,one,two,three,four,five,six,seven,eight,nine,resend"
 
@@ -147,7 +150,7 @@ def _render(session: CallSession, state: CoordinatorState, *, _depth: int = 0) -
     if state.status == CoordinatorStatus.READY_FOR_HANDOFF:
         logger.info("call %s: handed off to %s for '%s' (tier %s)",
                     session.call_sid, state.agent_id, state.intent_id, state.tier_achieved)
-        agent = _agent_registry.create(state.agent_id)
+        agent = session.agent_registry.create(state.agent_id)
         agent_state = agent.start(state.intent_id, state.cif)
         return _render_agent(session, agent, agent_state, _depth=_depth)
 
@@ -219,7 +222,8 @@ async def voice_incoming(request: Request) -> Response:
     coordinator = CoordinatorFlow(
         cbs=_cbs, otp_gateway=_otp_gateway, tier_map=_tier_map, intent_classifier=_intent_classifier
     )
-    session = _sessions.create(call_sid, coordinator)
+    agent_registry = AgentRegistry(_banking, _intent_classifier)
+    session = _sessions.create(call_sid, coordinator, agent_registry)
     state = coordinator.start(ani=ani)
     session.pending_status = state.status
     return _gather_response(state.prompt or "")

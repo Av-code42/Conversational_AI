@@ -11,7 +11,6 @@ import xml.etree.ElementTree as ET
 import pytest
 from fastapi.testclient import TestClient
 
-from ivr.agents.registry import AgentRegistry
 from ivr.auth.cbs_dummy import DummyCBSClient
 from ivr.auth.otp_dummy import DummyOTPGateway
 from ivr.banking.banking_dummy import DummyBankingClient
@@ -28,13 +27,14 @@ def isolated_app_state(monkeypatch):
     """app.py holds module-level singleton CBS/OTP/banking/session state,
     same as a real running service would -- reset it before every test so
     MPIN-fail counts, OTP codes, service-request tickets, and sessions from
-    one test never leak into another. _agent_registry is rebuilt too since
-    it captured _banking by reference at construction time -- patching
-    _banking alone wouldn't actually reach it."""
+    one test never leak into another. AgentRegistry isn't module-level (it's
+    constructed fresh per call, inside voice_incoming(), since it owns a
+    per-call ServiceRequestLimiter) so there's nothing to patch for it here
+    -- each test's own /voice/incoming call builds one against the patched
+    _banking automatically."""
     monkeypatch.setattr(app_module, "_cbs", DummyCBSClient())
     monkeypatch.setattr(app_module, "_otp_gateway", DummyOTPGateway())
     monkeypatch.setattr(app_module, "_banking", DummyBankingClient())
-    monkeypatch.setattr(app_module, "_agent_registry", AgentRegistry(app_module._banking, app_module._intent_classifier))
     monkeypatch.setattr(app_module, "_sessions", SessionStore())
 
 
@@ -231,7 +231,7 @@ def test_status_callback_ends_session(client):
 # -- Domain agents (real, dummy-data-backed -- not the old fake-instant-completion placeholder) --
 
 
-def test_change_of_address_slot_filling_records_a_ticket(client):
+def test_change_of_address_slot_filling_confirms_then_records_a_ticket(client):
     client.post("/voice/incoming", data={"CallSid": "CA1", "From": ASHA_MOBILE})
     client.post("/voice/gather", data={"CallSid": "CA1", "SpeechResult": "I need to update my address", "Confidence": "0.9"})
     res = client.post("/voice/gather", data={"CallSid": "CA1", "SpeechResult": "four three two one", "Confidence": "0.9"})
@@ -240,10 +240,31 @@ def test_change_of_address_slot_filling_records_a_ticket(client):
     res = client.post(
         "/voice/gather", data={"CallSid": "CA1", "SpeechResult": "221B Baker Street, Mumbai", "Confidence": "0.9"}
     )
+    assert "shall i update this as your new address" in _say_text(res.text).lower()
+    assert app_module._banking.list_service_requests("CIF1001") == []  # not committed until confirmed
+
+    res = client.post("/voice/gather", data={"CallSid": "CA1", "SpeechResult": "yes", "Confidence": "0.9"})
     assert "updated your address" in _say_text(res.text).lower()
     assert "anything else" in _say_text(res.text).lower()
     ticket = app_module._banking.list_service_requests("CIF1001")[0]
     assert ticket.details["new_address"] == "221B Baker Street, Mumbai"
+
+
+def test_change_of_address_confirmation_declined_lets_caller_restate(client):
+    client.post("/voice/incoming", data={"CallSid": "CA1", "From": ASHA_MOBILE})
+    client.post("/voice/gather", data={"CallSid": "CA1", "SpeechResult": "I need to update my address", "Confidence": "0.9"})
+    client.post("/voice/gather", data={"CallSid": "CA1", "SpeechResult": "four three two one", "Confidence": "0.9"})
+    client.post("/voice/gather", data={"CallSid": "CA1", "SpeechResult": "221B Baker Street, Mumbai", "Confidence": "0.9"})
+
+    res = client.post("/voice/gather", data={"CallSid": "CA1", "SpeechResult": "no", "Confidence": "0.9"})
+    assert "correct address" in _say_text(res.text).lower()
+
+    res = client.post(
+        "/voice/gather", data={"CallSid": "CA1", "SpeechResult": "42 Park Avenue, Delhi", "Confidence": "0.9"}
+    )
+    res = client.post("/voice/gather", data={"CallSid": "CA1", "SpeechResult": "yes", "Confidence": "0.9"})
+    ticket = app_module._banking.list_service_requests("CIF1001")[0]
+    assert ticket.details["new_address"] == "42 Park Avenue, Delhi"
 
 
 def test_topic_switch_during_address_slot_filling_reroutes(client):
@@ -259,9 +280,40 @@ def test_topic_switch_during_address_slot_filling_reroutes(client):
     assert app_module._banking.list_service_requests("CIF1001") == []
 
 
-def test_cheque_book_request_is_zero_slot_and_completes_immediately(client):
+def test_cheque_book_request_confirms_before_committing(client):
     client.post("/voice/incoming", data={"CallSid": "CA1", "From": ASHA_MOBILE})
     client.post("/voice/gather", data={"CallSid": "CA1", "SpeechResult": "I'd like a new chequebook", "Confidence": "0.9"})
     res = client.post("/voice/gather", data={"CallSid": "CA1", "SpeechResult": "four three two one", "Confidence": "0.9"})
+    assert "shall i go ahead" in _say_text(res.text).lower()
+    assert app_module._banking.list_service_requests("CIF1001") == []  # not committed until confirmed
+
+    res = client.post("/voice/gather", data={"CallSid": "CA1", "SpeechResult": "yes", "Confidence": "0.9"})
     assert "cheque book request is confirmed" in _say_text(res.text).lower()
     assert app_module._banking.list_service_requests("CIF1001")[0].kind == "cheque_book_request"
+
+
+def test_cheque_book_request_declined_is_not_submitted(client):
+    client.post("/voice/incoming", data={"CallSid": "CA1", "From": ASHA_MOBILE})
+    client.post("/voice/gather", data={"CallSid": "CA1", "SpeechResult": "I'd like a new chequebook", "Confidence": "0.9"})
+    client.post("/voice/gather", data={"CallSid": "CA1", "SpeechResult": "four three two one", "Confidence": "0.9"})
+
+    res = client.post("/voice/gather", data={"CallSid": "CA1", "SpeechResult": "no", "Confidence": "0.9"})
+    assert "haven't submitted" in _say_text(res.text).lower()
+    assert app_module._banking.list_service_requests("CIF1001") == []
+
+
+def test_service_request_rate_limit_escalates(client):
+    client.post("/voice/incoming", data={"CallSid": "CA1", "From": ASHA_MOBILE})
+    # Authenticate once (Tier 1 achieved persists for the rest of the call).
+    client.post("/voice/gather", data={"CallSid": "CA1", "SpeechResult": "I'd like a new chequebook", "Confidence": "0.9"})
+    client.post("/voice/gather", data={"CallSid": "CA1", "SpeechResult": "four three two one", "Confidence": "0.9"})
+    client.post("/voice/gather", data={"CallSid": "CA1", "SpeechResult": "yes", "Confidence": "0.9"})  # 1st request
+
+    for _ in range(2):  # 2nd and 3rd -- DEFAULT_MAX_SERVICE_REQUESTS_PER_CALL == 3
+        client.post("/voice/gather", data={"CallSid": "CA1", "SpeechResult": "I'd like a new chequebook", "Confidence": "0.9"})
+        client.post("/voice/gather", data={"CallSid": "CA1", "SpeechResult": "yes", "Confidence": "0.9"})
+
+    client.post("/voice/gather", data={"CallSid": "CA1", "SpeechResult": "I'd like a new chequebook", "Confidence": "0.9"})
+    res = client.post("/voice/gather", data={"CallSid": "CA1", "SpeechResult": "yes", "Confidence": "0.9"})
+    assert _has_hangup(res.text)
+    assert len(app_module._banking.list_service_requests("CIF1001")) == 3

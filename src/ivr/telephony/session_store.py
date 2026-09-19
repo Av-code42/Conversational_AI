@@ -15,6 +15,11 @@ active_agent tracks whether a domain agent currently owns the turn (e.g.
 ServiceAgent mid-way through asking for a new address) -- when set, the
 next utterance goes to active_agent.submit_input() instead of the
 Coordinator. None means the Coordinator/AuthFlow owns the turn instead.
+
+agent_registry is created fresh per call, same as coordinator -- it owns a
+ServiceRequestLimiter (agents/rate_limit.py) that must persist across the
+multiple intents one call can route through (the "anything else?" loop)
+but reset for a new call, so it can't be a shared, process-level registry.
 """
 
 from __future__ import annotations
@@ -23,6 +28,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from ivr.agents.models import DomainAgent
+from ivr.agents.registry import AgentRegistry
 from ivr.coordinator.flow import CoordinatorFlow, CoordinatorStatus
 
 
@@ -30,6 +36,7 @@ from ivr.coordinator.flow import CoordinatorFlow, CoordinatorStatus
 class CallSession:
     call_sid: str
     coordinator: CoordinatorFlow
+    agent_registry: AgentRegistry
     pending_status: CoordinatorStatus = CoordinatorStatus.NEEDS_INTENT
     identification_step: Literal["account", "card"] | None = None
     pending_account_last6: str | None = None
@@ -40,8 +47,8 @@ class SessionStore:
     def __init__(self) -> None:
         self._sessions: dict[str, CallSession] = {}
 
-    def create(self, call_sid: str, coordinator: CoordinatorFlow) -> CallSession:
-        session = CallSession(call_sid=call_sid, coordinator=coordinator)
+    def create(self, call_sid: str, coordinator: CoordinatorFlow, agent_registry: AgentRegistry) -> CallSession:
+        session = CallSession(call_sid=call_sid, coordinator=coordinator, agent_registry=agent_registry)
         self._sessions[call_sid] = session
         return session
 

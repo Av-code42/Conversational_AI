@@ -44,3 +44,21 @@ def test_each_call_returns_a_fresh_instance(registry):
     # `second` must be unaffected by `first`'s in-progress state
     with pytest.raises(RuntimeError):
         second.submit_input("should have nothing pending")
+
+
+def test_service_agents_from_the_same_registry_share_one_rate_limiter():
+    # The registry itself is constructed fresh per call (app.py/CLI), so its
+    # ServiceRequestLimiter naturally caps requests per call, not per agent
+    # instance or per intent -- verified here at the registry's own scope.
+    from ivr.agents.models import AgentStatus
+
+    registry = AgentRegistry(DummyBankingClient(), FakeClassifier())
+    limiter = registry._service_request_limiter
+    for _ in range(limiter._max_per_call):
+        limiter.record_submission()
+
+    agent = registry.create("service_agent")
+    agent.start("kyc_update", "CIF1001")
+    state = agent.submit_input("yes")
+    assert state.status == AgentStatus.ESCALATE
+    assert state.escalation_reason == "service_request_limit_exceeded"
