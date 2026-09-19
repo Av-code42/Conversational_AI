@@ -31,8 +31,8 @@ from twilio.twiml.voice_response import Gather, VoiceResponse
 from ivr.auth.cbs_dummy import DummyCBSClient
 from ivr.auth.otp_dummy import DummyOTPGateway
 from ivr.auth.tier_config import IntentTierMap
+from ivr.coordinator.build_intent_classifier import build_intent_classifier
 from ivr.coordinator.flow import CoordinatorFlow, CoordinatorState, CoordinatorStatus
-from ivr.coordinator.intent_classifier import KeywordIntentClassifier
 from ivr.telephony import config
 from ivr.telephony.digit_normalizer import normalize_spoken_digits
 from ivr.telephony.session_store import CallSession, SessionStore
@@ -42,13 +42,15 @@ logger = logging.getLogger("ivr.telephony")
 
 app = FastAPI(title="ABC Retail Bank IVR -- Twilio webhook service")
 
-# Shared, module-level dummy backends -- the same data the CLI harness and
-# test suite use. A real deployment would inject real CBS/OTP/NLU clients
+# Shared, module-level backends -- CBS/OTP are the same dummy data the CLI
+# harness and test suite use; intent classification is real Groq-based LLM
+# classification if GROQ_API_KEY is set (build_intent_classifier.py), else
+# keyword matching. A real deployment would inject real CBS/OTP clients
 # here instead; nothing else in this file would need to change.
 _cbs = DummyCBSClient()
 _otp_gateway = DummyOTPGateway()
 _tier_map = IntentTierMap.load()
-_intent_classifier = KeywordIntentClassifier(_tier_map)
+_intent_classifier = build_intent_classifier(_tier_map)
 _sessions = SessionStore()
 
 _FACTOR_HINTS = "zero,one,two,three,four,five,six,seven,eight,nine,resend"

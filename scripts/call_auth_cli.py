@@ -2,10 +2,11 @@
 """Interactive CLI harness for CoordinatorFlow (greeting -> intent capture ->
 AuthFlow's auth gate -> handoff -> "anything else?" loop) -- type responses
 instead of speaking them, "fake SMS" printed to the console instead of a
-real OTP gateway. No telephony, ASR, TTS, or real NLU involved: intent
-capture uses the placeholder KeywordIntentClassifier, and there's no real
-domain agent to actually run a tool once handed off -- this simulates that
-completing instantly so the "anything else?" loop is exercisable.
+real OTP gateway. No telephony or ASR/TTS involved. Intent capture uses
+real Groq-based LLM classification if GROQ_API_KEY is set, falling back to
+keyword matching otherwise -- see build_intent_classifier.py. There's no
+real domain agent to actually run a tool once handed off -- this simulates
+that completing instantly so the "anything else?" loop is exercisable.
 
 Run from the repo root:
     python scripts/call_auth_cli.py
@@ -21,8 +22,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from ivr.auth.cbs_dummy import DummyCBSClient  # noqa: E402
 from ivr.auth.otp_dummy import DummyOTPGateway  # noqa: E402
 from ivr.auth.tier_config import IntentTierMap  # noqa: E402
+from ivr.coordinator.build_intent_classifier import build_intent_classifier  # noqa: E402
 from ivr.coordinator.flow import CoordinatorFlow, CoordinatorStatus  # noqa: E402
-from ivr.coordinator.intent_classifier import KeywordIntentClassifier  # noqa: E402
 
 
 def print_customer_directory(cbs: DummyCBSClient) -> None:
@@ -126,10 +127,11 @@ def main() -> None:
     cbs = DummyCBSClient()
     otp_gateway = DummyOTPGateway()
     tier_map = IntentTierMap.load()
-    intent_classifier = KeywordIntentClassifier(tier_map)
+    intent_classifier = build_intent_classifier(tier_map)
 
     print("=== ABC Retail Bank IVR -- interactive CLI harness ===")
-    print("No telephony/ASR/TTS/real-NLU here -- CoordinatorFlow driven directly, turn by turn.")
+    print("No telephony/ASR/TTS here -- CoordinatorFlow driven directly, turn by turn.")
+    print("Intent capture uses Groq (set GROQ_API_KEY) with a keyword-matching fallback if unset.")
     print("Prefix any answer with '~' to simulate low ASR confidence, e.g. '~4321'.")
     print("Say things like 'agent', 'repeat', or 'start over' at the intent prompt to test global commands.")
 
