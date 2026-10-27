@@ -100,7 +100,7 @@ def _gather_action_url() -> str:
     return "/voice/gather"
 
 
-def _gather_response(prompt: str, *, hints: str | None = None) -> Response:
+def _gather_response(prompt: str, *, hints: str | None = None, interruptible: bool = True) -> Response:
     # `hints` is only ever passed for digit-capture prompts (MPIN/OTP/
     # identification) -- reused here as the signal to use a longer, fixed
     # trailing-silence timeout instead of Twilio's "auto" end-of-speech
@@ -113,8 +113,20 @@ def _gather_response(prompt: str, *, hints: str | None = None) -> Response:
         timeout=config.GATHER_TIMEOUT_SECONDS, speech_timeout=speech_timeout,
         language="en-IN", hints=hints,
     )
-    gather.say(prompt)
-    vr.append(gather)
+    # Twilio only starts listening once a <Gather> begins -- nesting <Say>
+    # inside it (the default) lets a caller barge in and cut the prompt
+    # short, which is fine for most turns but undermines a confirmation
+    # readback (the caller can say "yes" before ever hearing what they're
+    # confirming). interruptible=False instead plays <Say> as its own verb
+    # ahead of an empty <Gather>, so the full readback always finishes
+    # before speech capture starts. GATHER_TIMEOUT_SECONDS still measures
+    # from when the Gather itself begins either way.
+    if interruptible:
+        gather.say(prompt)
+        vr.append(gather)
+    else:
+        vr.say(prompt)
+        vr.append(gather)
     # If the caller says nothing at all before the gather times out, Twilio
     # still POSTs to `action` with no SpeechResult -- _dispatch treats that
     # as a confidence=0 turn, which every submit_* method already handles
@@ -204,7 +216,10 @@ def _render_agent(session: CallSession, agent: DomainAgent, agent_state: AgentSt
 
     if agent_state.status == AgentStatus.NEEDS_INPUT:
         session.active_agent = agent
-        return _gather_response(agent_state.prompt or "")  # free-text slot (e.g. an address) -- no digit hints
+        # free-text slot (e.g. an address) or a confirmation readback --
+        # interruptible comes from the agent (see AgentState.interruptible):
+        # False for a confirmation the caller must hear in full.
+        return _gather_response(agent_state.prompt or "", interruptible=agent_state.interruptible)
 
     if agent_state.status == AgentStatus.NEED_HANDOFF:
         session.active_agent = None

@@ -206,3 +206,25 @@ def test_rate_limit_shared_across_agent_instances_via_the_same_limiter():
     state = second_agent.submit_input("yes")
     assert state.status == AgentStatus.ESCALATE
     assert state.escalation_reason == "service_request_limit_exceeded"
+
+
+# -- interruptible flag (barge-in control) -----------------------------
+
+
+def test_cheque_book_confirmation_prompt_is_not_interruptible():
+    agent = make_agent()
+    state = agent.start("cheque_book_request", "CIF1001")
+    assert state.interruptible is False
+
+
+def test_address_confirmation_readback_is_not_interruptible():
+    agent = make_agent(classifier=FakeClassifier(result=None))
+    agent.start("change_of_address", "CIF1001")
+    state = agent.submit_input("221B Baker Street, Mumbai")
+    assert state.interruptible is False
+
+
+def test_address_ask_itself_is_interruptible():
+    agent = make_agent()
+    state = agent.start("change_of_address", "CIF1001")
+    assert state.interruptible is True

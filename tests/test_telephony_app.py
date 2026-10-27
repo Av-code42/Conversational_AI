@@ -400,3 +400,59 @@ def test_low_confidence_account_digits_does_not_advance_to_card_prompt(client):
         "/voice/gather", data={"CallSid": "CA2", "SpeechResult": "seven eight nine zero one two", "Confidence": "0.9"}
     )
     assert "card" in _say_text(res.text).lower()
+
+
+# -- Barge-in control (interruptible vs non-interruptible prompts) ----------
+
+
+def _response_children(xml_text: str) -> list[str]:
+    return [el.tag for el in ET.fromstring(xml_text)]
+
+
+def test_gather_response_default_nests_say_inside_gather_for_barge_in(client):
+    # Default behavior: <Say> nested in <Gather> lets Twilio's speech
+    # recognition listen concurrently with the prompt playing, so a caller
+    # can barge in and cut it short.
+    res = app_module._gather_response("hello")
+    root = ET.fromstring(res.body)
+    assert [el.tag for el in root] == ["Gather"]
+    assert root.find("Gather/Say") is not None
+
+
+def test_gather_response_non_interruptible_plays_say_before_gather(client):
+    # interruptible=False: <Say> as its own verb ahead of an empty <Gather>
+    # -- Twilio only starts listening once the Gather begins, so the full
+    # prompt always finishes playing before speech capture starts.
+    res = app_module._gather_response("hello", interruptible=False)
+    root = ET.fromstring(res.body)
+    assert [el.tag for el in root] == ["Say", "Gather"]
+    assert root.find("Gather/Say") is None
+
+
+def test_cheque_book_confirmation_readback_is_not_interruptible(client):
+    client.post("/voice/incoming", data={"CallSid": "CA1", "From": ASHA_MOBILE})
+    client.post("/voice/gather", data={"CallSid": "CA1", "SpeechResult": "I'd like a new chequebook", "Confidence": "0.9"})
+    res = client.post("/voice/gather", data={"CallSid": "CA1", "SpeechResult": "four three two one", "Confidence": "0.9"})
+    assert "shall i go ahead" in _say_text(res.text).lower()
+    assert _response_children(res.text) == ["Say", "Gather"]
+
+
+def test_address_confirmation_readback_is_not_interruptible(client):
+    client.post("/voice/incoming", data={"CallSid": "CA1", "From": ASHA_MOBILE})
+    client.post("/voice/gather", data={"CallSid": "CA1", "SpeechResult": "I need to update my address", "Confidence": "0.9"})
+    client.post("/voice/gather", data={"CallSid": "CA1", "SpeechResult": "four three two one", "Confidence": "0.9"})
+    res = client.post(
+        "/voice/gather", data={"CallSid": "CA1", "SpeechResult": "221B Baker Street, Mumbai", "Confidence": "0.9"}
+    )
+    assert "you said" in _say_text(res.text).lower()
+    assert _response_children(res.text) == ["Say", "Gather"]
+
+
+def test_address_ask_itself_stays_interruptible(client):
+    # Only the readback/confirmation is protected -- the initial "what's
+    # your new address?" question has nothing to barge into yet.
+    client.post("/voice/incoming", data={"CallSid": "CA1", "From": ASHA_MOBILE})
+    client.post("/voice/gather", data={"CallSid": "CA1", "SpeechResult": "I need to update my address", "Confidence": "0.9"})
+    res = client.post("/voice/gather", data={"CallSid": "CA1", "SpeechResult": "four three two one", "Confidence": "0.9"})
+    assert "new address" in _say_text(res.text).lower()
+    assert _response_children(res.text) == ["Gather"]

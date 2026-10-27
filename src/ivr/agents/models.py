@@ -30,6 +30,13 @@ class AgentState:
     prompt: str | None = None  # spoken response (COMPLETED) or slot question (NEEDS_INPUT)
     new_intent_id: str | None = None  # set when NEED_HANDOFF
     escalation_reason: str | None = None  # set when ESCALATE
+    # False for a confirmation readback the caller must hear in full before
+    # answering (e.g. "you said <address>, shall I update this?") -- the
+    # telephony layer (app.py's _gather_response) turns this into a
+    # non-interruptible prompt, since Twilio's default barge-in would
+    # otherwise let a caller say "yes" before the readback finishes
+    # playing, defeating the point of reading it back at all.
+    interruptible: bool = True
 
 
 class DomainAgent(Protocol):

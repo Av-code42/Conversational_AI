@@ -87,6 +87,7 @@ class ServiceAgent:
                 status=AgentStatus.NEEDS_INPUT,
                 prompt="I'll request a new 20-leaf cheque book, delivered to your registered address. "
                 "Shall I go ahead? Please say yes or no.",
+                interruptible=False,
             )
 
         if intent_id == "kyc_update":
@@ -95,6 +96,7 @@ class ServiceAgent:
                 status=AgentStatus.NEEDS_INPUT,
                 prompt="I'll register a KYC re-verification request for your account. "
                 "Shall I go ahead? Please say yes or no.",
+                interruptible=False,
             )
 
         raise ValueError(f"ServiceAgent doesn't own intent {intent_id!r}")
@@ -141,6 +143,7 @@ class ServiceAgent:
         return AgentState(
             status=AgentStatus.NEEDS_INPUT,
             prompt=f"You said: {self._pending_address}. Shall I update this as your new address? Please say yes or no.",
+            interruptible=False,
         )
 
     def _handle_address_confirmation(self, text: str) -> AgentState:
@@ -203,7 +206,7 @@ class ServiceAgent:
         self._confirm_reprompts += 1
         if self._confirm_reprompts > SOFT_REPROMPT_MAX:
             return self._escalate("confirmation_not_understood")
-        return AgentState(status=AgentStatus.NEEDS_INPUT, prompt=prompt)
+        return AgentState(status=AgentStatus.NEEDS_INPUT, prompt=prompt, interruptible=False)
 
     def _check_rate_limit(self) -> AgentState | None:
         if self._limiter.can_submit():
